@@ -28,7 +28,7 @@ npm run diagnose
 
 脚本只监听 `127.0.0.1`。如果应用仍运行而调试接口不可用，脚本停止并提示正常退出，不会强杀或自动重启。MCP 服务只连接，不会自行启动应用。调试端口应仅供可信的本机程序访问。
 
-在应用中打开目标画布，再把 `examples/mcp-config.json` 的内容合并到支持通用 MCP 配置的客户端。Codex 配置格式见 `examples/codex-config.toml`。路径和 `node` 程序路径按本机位置调整；若客户端找不到 Node，请将 `command` 改为 `node.exe` 的完整路径。MCP 客户端启动 `dist/server.js`，不要把 `npm run diagnose` 当作 MCP 启动命令。
+在应用中打开目标画布。在项目目录运行 `npm run --silent config:claude`，自动生成适用于本机的通用 MCP JSON；Codex 使用 `npm run --silent config:codex`。生成器读取实际 Node.js 程序路径和项目位置，不依赖固定盘符、用户名或终端当前目录。将输出的服务合并到客户端配置中，保留已有服务。每台电脑都应分别生成；移动项目后应重新生成。`examples/` 仅展示结构，其中的 `REPLACE_WITH_PROJECT_DIRECTORY` 是占位符，不可直接使用。MCP 客户端启动 `dist/server.js`，不要把 `npm run diagnose` 当作 MCP 启动命令。
 
 `TAPNOW_CDP_URL` 默认为 `http://127.0.0.1:9222`；若改端口，启动参数与客户端环境变量必须一致。`TAPNOW_STATE_DIR` 可指定本地请求记录目录（持久化生成请求的去重信息）。
 
@@ -87,31 +87,27 @@ npm run diagnose
 
 ### Claude Desktop（Windows）
 
-在 Claude 的 Settings → Developer → Edit Config 中打开配置文件，通常位于 `%APPDATA%\Claude\claude_desktop_config.json`。将以下服务合并到已有的 `mcpServers` 中，保留其他服务：
+在项目目录执行以下命令，生成包含本机正确路径的配置：
 
-```json
-{
-  "mcpServers": {
-    "tapnow-canvas": {
-      "command": "C:/Program Files/nodejs/node.exe",
-      "args": ["D:/AgentProject/TapnowAPP MCP/dist/server.js"],
-      "env": { "TAPNOW_CDP_URL": "http://127.0.0.1:9222" }
-    }
-  }
-}
+```powershell
+npm run --silent config:claude
 ```
 
-完全退出并重新打开 Claude Desktop。请根据本机位置调整 Node.js 与项目的绝对路径。Claude 会启动 MCP 服务，无需另外运行 `npm start`。接入后先让 Claude 调用 `tapnow_diagnose` 和 `tapnow_canvas_read` 检查连接。
+在 Claude 的 Settings → Developer → Edit Config 中打开配置文件，通常位于 `%APPDATA%\Claude\claude_desktop_config.json`。将命令输出的 `tapnow-canvas` 服务合并到已有的 `mcpServers` 中，保留其他服务。生成命令仅输出配置，不修改客户端文件。
+
+完全退出并重新打开 Claude Desktop。Claude 会启动 MCP 服务，无需另外运行 `npm start`。接入后先让 Claude 调用 `tapnow_diagnose` 和 `tapnow_canvas_read` 检查连接。
 
 ### Claude Code（本机 Windows）
 
-在 PowerShell 中运行：
+在项目目录的 PowerShell 中运行以下命令，复制其输出的整行注册命令，再执行：
 
 ```powershell
-claude mcp add --transport stdio --scope user --env TAPNOW_CDP_URL=http://127.0.0.1:9222 tapnow-canvas -- "C:\Program Files\nodejs\node.exe" "D:\AgentProject\TapnowAPP MCP\dist\server.js"
+npm run --silent config:claude-code
 ```
 
 在 Claude Code 中输入 `/mcp` 查看连接状态。此服务使用本地 stdio，不能作为远程连接器 URL 直接添加到 Claude 网页版。
+
+Codex 桌面版或 CLI：运行 `npm run --silent config:codex`，将输出合并到本机的 `~/.codex/config.toml`。这些输出中出现绝对路径是正常的：它们由各台电脑自动生成，保证客户端从任意工作目录启动时都能找到服务。
 
 官方参考：[Claude Desktop 本地 MCP](https://modelcontextprotocol.io/docs/develop/connect-local-servers)、[Claude Code MCP](https://code.claude.com/docs/en/mcp)。
 

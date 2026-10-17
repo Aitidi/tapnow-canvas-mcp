@@ -10,7 +10,10 @@
     "dev": "tsx src/server.ts",
     "diagnose": "tsx src/cli.ts diagnose",
     "launch": "tsx src/cli.ts launch",
-    "test": "tsx --test test/*.test.ts"
+    "test": "tsx --test test/*.test.ts",
+    "config:claude": "node scripts/print-config.mjs json",
+    "config:codex": "node scripts/print-config.mjs codex",
+    "config:claude-code": "node scripts/print-config.mjs claude-code"
   },
   "engines": {
     "node": ">=22"
