@@ -1,4 +1,4 @@
-# Tapnow 当前画布 MCP
+# Tapnow 画布操作 MCP
 
 供本机 agent 通过标准 MCP `stdio` 操作 Tapnow 桌面端当前打开的画布。使用应用自己的编辑、上传、生成和保存入口，复用当前登录状态；不修改 Tapnow 安装文件。首个适配目标为 Windows / Tapnow 0.4.112。
 
