@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "tapnow-canvas": {
+      "command": "node",
+      "args": ["D:/AgentProject/TapnowAPP MCP/dist/server.js"],
+      "env": { "TAPNOW_CDP_URL": "http://127.0.0.1:9222" }
+    }
+  }
+}

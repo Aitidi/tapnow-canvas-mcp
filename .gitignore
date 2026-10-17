@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.tapnow-mcp/
+artifacts/
+*.log
+.research-build/
+output/
+.env
+.env.*

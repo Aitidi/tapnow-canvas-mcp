@@ -1,0 +1,6 @@
+[mcp_servers.tapnow_canvas]
+command = "node"
+args = ['D:\AgentProject\TapnowAPP MCP\dist\server.js']
+
+[mcp_servers.tapnow_canvas.env]
+TAPNOW_CDP_URL = "http://127.0.0.1:9222"

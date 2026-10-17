@@ -1,0 +1,30 @@
+{
+  "name": "tapnow-canvas-mcp",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Local MCP bridge for the active TapNow desktop canvas",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx src/server.ts",
+    "diagnose": "tsx src/cli.ts diagnose",
+    "launch": "tsx src/cli.ts launch",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.3.1",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@types/node": "^26.6.5",
+    "@types/ws": "^8.18.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
