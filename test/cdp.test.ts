@@ -3,7 +3,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { test, type TestContext } from 'node:test';
 import WebSocket, { WebSocketServer } from 'ws';
-import { CdpConnection, type Target } from '../src/cdp.js';
+import { CdpConnection, isTapnowTarget, type Target } from '../src/cdp.js';
 
 async function fixture(t: TestContext) {
   let targets: unknown = [];
@@ -198,4 +198,68 @@ test('主动关闭连接立即拒绝在途请求', async t => {
   const request = f.connection.send('Pending');
   f.connection.close();
   await assert.rejects(request, hasCode('CONNECTION_LOST'));
+});
+
+test('网页模式仅接受官方 HTTPS 画布，默认桌面模式不附着网页', () => {
+  const canvas = 'https://app.tapnow.ai/canvas/f45bf063-e173-4ebb-bcdc-b5c70c60f464';
+  assert.equal(isTapnowTarget(canvas, 'web'), true);
+  assert.equal(isTapnowTarget(canvas, 'desktop'), false);
+  for (const url of [canvas.replace('https:', 'http:'), canvas.replace('app.tapnow.ai', 'app.tapnow.ai.evil'),
+    canvas.replace('app.tapnow.ai', 'user:secret@app.tapnow.ai'), canvas.replace('app.tapnow.ai', 'app.tapnow.ai:444'),
+    'https://app.tapnow.ai/home', 'https://app.tapnow.ai/canvas/broken', 'tapnow://app/canvas/test']) {
+    assert.equal(isTapnowTarget(url, 'web'), false, url);
+  }
+});
+
+test('浏览器 WebSocket 端点拒绝外网、凭据、查询参数及页面级路径', () => {
+  for (const endpoint of ['ws://example.com:9222/devtools/browser/abc', 'ws://user:secret@127.0.0.1:9222/devtools/browser',
+    'ws://127.0.0.1:9222/devtools/page/abc', 'ws://127.0.0.1:9222/devtools/browser?token=abc',
+    'http://127.0.0.1:9222/?token=abc', 'http://127.0.0.1:9222/#hash']) {
+    assert.throws(() => new CdpConnection(endpoint), hasCode('INVALID_ENDPOINT'));
+  }
+  assert.equal(new CdpConnection('chrome', { mode: 'web' }).endpoint, 'chrome');
+});
+
+test('浏览器会话通过 Target 协议选定网页，读写与截图命令携带同一 sessionId', async t => {
+  const f = await fixture(t);
+  const endpoint = f.connection.endpoint.replace('http:', 'ws:') + '/devtools/browser/test';
+  const connection = new CdpConnection(endpoint, { mode: 'web' });
+  t.after(() => connection.close());
+  const calls: any[] = [];
+  f.wss.on('connection', socket => socket.on('message', raw => {
+    const call = JSON.parse(raw.toString()); calls.push(call);
+    const result = call.method === 'Target.getTargets' ? { targetInfos: [
+      { targetId: 'desktop', type: 'page', url: 'tapnow://app/canvas/test' },
+      { targetId: 'web', type: 'page', url: 'https://app.tapnow.ai/canvas/f45bf063-e173-4ebb-bcdc-b5c70c60f464' },
+      { targetId: 'other', type: 'page', url: 'https://example.com/' },
+    ] } : call.method === 'Target.attachToTarget' ? { sessionId: 'canvas-session' } : { result: { value: 'ok' } };
+    socket.send(JSON.stringify({ id: call.id, result, ...(call.sessionId ? { sessionId: call.sessionId } : {}) }));
+  }));
+  assert.equal((await connection.connect()).id, 'web');
+  await connection.connect();
+  assert.equal(await connection.evaluate('document.title'), 'ok');
+  await connection.send('Page.captureScreenshot');
+  assert.equal(calls.filter(c => c.method === 'Target.attachToTarget').length, 1);
+  assert.deepEqual(calls.find(c => c.method === 'Target.attachToTarget').params, { targetId: 'web', flatten: true });
+  assert.equal(calls.find(c => c.method === 'Runtime.evaluate').sessionId, 'canvas-session');
+  assert.equal(calls.find(c => c.method === 'Page.captureScreenshot').sessionId, 'canvas-session');
+  assert.equal(calls.filter(c => c.method.startsWith('Target.')).every(c => c.sessionId === undefined), true);
+});
+
+test('网页多个标签时拒绝猜测，指定目标 ID 后才允许连接', async t => {
+  const f = await fixture(t);
+  const endpoint = f.connection.endpoint.replace('http:', 'ws:') + '/devtools/browser/test';
+  const first = new CdpConnection(endpoint, { mode: 'web' });
+  const second = new CdpConnection(endpoint, { mode: 'web', targetId: 'two' });
+  t.after(() => { first.close(); second.close(); });
+  const attaches: string[] = [];
+  f.wss.on('connection', socket => socket.on('message', raw => {
+    const call = JSON.parse(raw.toString());
+    if (call.method === 'Target.attachToTarget') attaches.push(call.params.targetId);
+    socket.send(JSON.stringify({ id: call.id, result: call.method === 'Target.getTargets' ? { targetInfos: ['one', 'two'].map(targetId => ({ targetId, type: 'page', url: 'https://app.tapnow.ai/canvas/f45bf063-e173-4ebb-bcdc-b5c70c60f464' })) } : { sessionId: 'chosen' } }));
+  }));
+  await assert.rejects(first.connect(), hasCode('AMBIGUOUS_WINDOW'));
+  assert.deepEqual(attaches, []);
+  assert.equal((await second.connect()).id, 'two');
+  assert.deepEqual(attaches, ['two']);
 });

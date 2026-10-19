@@ -1,4 +1,5 @@
-import { mkdir, readFile, stat, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, stat, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
 import { basename, extname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CdpConnection } from './cdp.js';
@@ -7,6 +8,11 @@ import { RequestJournal, digest } from './journal.js';
 import { discoverNativeModules } from './adapter/discovery.js';
 import { installRuntime } from './adapter/runtime.js';
 import { discoverMentionNative } from './adapter/mention-discovery.js';
+import { collectScopedNative, isScopedNativeFunction } from './adapter/scoped-native.js';
+
+export const serviceMethods = ['diagnose', 'inspect', 'edit', 'view', 'importAsset', 'generationCapabilities', 'promptReferences', 'promptSet', 'generationPrepare', 'generationSubmit', 'generationStatus', 'history', 'save', 'screenshot'] as const;
+export type ServiceMethod = typeof serviceMethods[number];
+export type CanvasService = Pick<TapnowService, ServiceMethod | 'close'>;
 
 const MIME: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.svg': 'image/svg+xml', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.flac': 'audio/flac' };
 const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -30,10 +36,10 @@ export class TapnowService {
   readonly journal: RequestJournal;
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
-  private readonly runtimeFingerprint = digest([discoverNativeModules.toString(), discoverMentionNative.toString(), installRuntime.toString()]);
+  private readonly runtimeFingerprint = digest([discoverNativeModules.toString(), discoverMentionNative.toString(), installRuntime.toString(), collectScopedNative.toString(), isScopedNativeFunction.toString()]);
 
-  constructor(options: { endpoint?: string; stateDir?: string } = {}) {
-    this.cdp = new CdpConnection(options.endpoint);
+  constructor(options: { endpoint?: string; stateDir?: string; mode?: 'desktop' | 'web'; targetId?: string } = {}) {
+    this.cdp = new CdpConnection(options.endpoint, options);
     this.stateDir = options.stateDir ?? process.env.TAPNOW_STATE_DIR ?? fileURLToPath(new URL('../.tapnow-mcp/', import.meta.url));
     this.journal = new RequestJournal(join(this.stateDir, 'requests'), this.cdp.endpoint);
   }
@@ -47,10 +53,13 @@ export class TapnowService {
   }
   private async ready() {
     await this.cdp.connect();
-    const moduleSignature = `JSON.stringify([...new Set([...document.scripts].map(s=>s.src).concat([...document.querySelectorAll('link[rel="modulepreload"]')].map(l=>l.href)))].filter(u=>/\\/assets\\/(?:index|UnlimitedModeToggle|course-api-base-url|group)-[^/]+\\.js$/.test(u)).sort())`;
+    const moduleSignature = `JSON.stringify([...new Set([...document.scripts].map(s=>s.src).concat([...document.querySelectorAll('link[rel="modulepreload"]')].map(l=>l.href)))].filter(u=>/\\/assets\\/(?:index|UnlimitedModeToggle|course-api-base-url|group|vendor-pkg-canvas|vendor-packages)-[^/]+\\.js$/.test(u)).sort())`;
     const same = await this.cdp.evaluate(`globalThis.__tapnowCanvasMcp?.fingerprint === ${JSON.stringify(this.runtimeFingerprint)} && globalThis.__tapnowCanvasMcp?.moduleSignature === ${moduleSignature}`);
     if (!same) {
-      await this.cdp.evaluate(`(async()=>{ const __name=(value)=>value; const native=await (${discoverNativeModules.toString()})(); try { native.mentions=await (${discoverMentionNative.toString()})(); } catch(e) { native.mentionError={code:e.code??'UNSUPPORTED_VERSION',message:e.message}; } delete globalThis.__tapnowCanvasMcp; (${installRuntime.toString()})(native); globalThis.__tapnowCanvasMcp.fingerprint=${JSON.stringify(this.runtimeFingerprint)}; globalThis.__tapnowCanvasMcp.moduleSignature=${moduleSignature}; return true; })()`);
+      await collectScopedNative(this.cdp);
+      try {
+        await this.cdp.evaluate(`(async()=>{ const __name=(value)=>value; const native=await (${discoverNativeModules.toString()})(); try { native.mentions=await (${discoverMentionNative.toString()})(); } catch(e) { native.mentionError={code:e.code??'UNSUPPORTED_VERSION',message:e.message}; } delete globalThis.__tapnowCanvasMcp; (${installRuntime.toString()})(native); globalThis.__tapnowCanvasMcp.fingerprint=${JSON.stringify(this.runtimeFingerprint)}; globalThis.__tapnowCanvasMcp.moduleSignature=${moduleSignature}; return true; })()`);
+      } finally { await this.cdp.evaluate('delete globalThis.__tapnowCanvasMcpScopedNative').catch(() => {}); }
     }
   }
   private async invoke(action: string, args: any = {}, timeout = 20000): Promise<any> {
@@ -132,8 +141,10 @@ export class TapnowService {
       let file: any;
       if (args.path) {
         const info = await stat(args.path);
-        if (!info.isFile() || info.size > 50 * 1024 * 1024) throw new TapnowError('FILE_TOO_LARGE', '首版支持不超过 50 MiB 的普通媒体文件。');
+        const limit = (kind === 'video' ? 500 : 50) * 1024 * 1024;
+        if (!info.isFile() || info.size > limit) throw new TapnowError('FILE_TOO_LARGE', `本地视频最大 500 MiB，其他媒体最大 50 MiB；应用自身限制仍适用。`);
         if (!mimeType || !mimeType.startsWith(kind! + '/')) throw new TapnowError('UNSUPPORTED_MEDIA', '本地文件扩展名与指定媒体类型不匹配。');
+        if (info.size > 50 * 1024 * 1024) return this.importLargeVideo({ ...args, kind }, mimeType);
         const bytes = await readFile(args.path);
         if (bytes.length > 50 * 1024 * 1024) throw new TapnowError('FILE_TOO_LARGE', '文件读取期间增长，已停止上传。');
         file = { name: basename(args.path), mimeType, base64: bytes.toString('base64') };
@@ -141,6 +152,40 @@ export class TapnowService {
       const payload = { ...args, kind, ...(file ? { file } : {}), ...(args.url ? { url: mediaUrl(args.url) } : {}) };
       return this.journal.run('importAsset', { ...args, kind, ...(file ? { fileHash: digest(file.base64) } : {}) }, () => this.invoke('importAsset', payload, 120000));
     }));
+  }
+  /** Transfer large videos in bounded CDP messages, then use the native uploader once. */
+  private async importLargeVideo(args: any, mimeType: string) {
+    const handle = await open(args.path, 'r');
+    const limit = 500 * 1024 * 1024, chunkSize = 2 * 1024 * 1024;
+    try {
+      const info = await handle.stat();
+      if (!info.isFile() || info.size > limit) throw new TapnowError('FILE_TOO_LARGE', '本地视频最大 500 MiB。');
+      const hash = createHash('sha256'); let size = 0;
+      for await (const chunk of handle.createReadStream({ start: 0, autoClose: false, highWaterMark: chunkSize })) {
+        size += chunk.length;
+        if (size > limit) throw new TapnowError('FILE_TOO_LARGE', '文件读取期间增长，已停止上传。');
+        hash.update(chunk);
+      }
+      if (size !== info.size) throw new TapnowError('FILE_CHANGED', '文件读取期间发生变化，请待文件稳定后重试。');
+      const fileHash = hash.digest('hex');
+      return await this.journal.run('importAsset', { ...args, fileHash: 'sha256:' + fileHash }, async () => {
+        const transferId = randomUUID();
+        try {
+          await this.invoke('importFileBegin', { canvasId: args.canvasId, transferId, size, name: basename(args.path), mimeType });
+          const sentHash = createHash('sha256'); let offset = 0;
+          for await (const chunk of handle.createReadStream({ start: 0, autoClose: false, highWaterMark: chunkSize })) {
+            if (offset + chunk.length > size) throw new TapnowError('FILE_CHANGED', '文件传输期间发生变化，已停止上传。');
+            sentHash.update(chunk);
+            await this.invoke('importFileChunk', { canvasId: args.canvasId, transferId, offset, base64: chunk.toString('base64') });
+            offset += chunk.length;
+          }
+          if (offset !== size || sentHash.digest('hex') !== fileHash) throw new TapnowError('FILE_CHANGED', '文件传输期间发生变化，已停止上传。');
+          return await this.invoke('importAsset', { ...args, file: { transferId } }, 600000);
+        } finally {
+          await this.invoke('importFileAbort', { canvasId: args.canvasId, transferId }).catch(() => {});
+        }
+      });
+    } finally { await handle.close(); }
   }
   generationCapabilities() { return this.read('capabilities'); }
   promptReferences(args: { canvasId: string; nodeId?: string; source?: 'canvas' | 'library'; query?: string; limit?: number; offset?: number }) {

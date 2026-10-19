@@ -6,9 +6,10 @@ import { installRuntime } from '../src/adapter/runtime.js';
 const canvasId = 'e1bcdd91-a65f-4710-a3ea-08d98a4da442';
 const otherCanvasId = '00000000-0000-0000-0000-000000000002';
 
-function fixture(options: { flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean } } = {}) {
+function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean } } = {}) {
   let nodes: any[] = options.initialNodes ?? [], edges: any[] = options.initialEdges ?? [];
   let edits = 0, flushes = 0, factories = 0, uploads = 0, generations = 0;
+  let uploadedFile: File | undefined;
   let promptDraft = '', promptChanges = 0, libraryGets = 0;
   const historyCalls: Record<string, number> = { localUndo: 0, localRedo: 0, collabUndo: 0, collabRedo: 0 };
   const location = { pathname: '/canvas/' + canvasId, href: 'tapnow://app/canvas/' + canvasId };
@@ -18,7 +19,7 @@ function fixture(options: { flushResult?: string; switchAfterChange?: boolean; p
     if (args.edges) edges = edges.filter(e => !args.edges.some((item: any) => e.id === item.id));
   } };
   const props = {
-    'data-keyboard-scope': 'canvas', nodeTypes: { text: {}, image: {}, audio: {}, group: {} }, nodesDraggable: true,
+    'data-keyboard-scope': 'canvas', nodeTypes: { text: {}, image: {}, video: {}, audio: {}, group: {} }, nodesDraggable: true,
     onNodesChange(changes: any[]) {
       edits++;
       for (const change of changes) {
@@ -55,10 +56,10 @@ function fixture(options: { flushResult?: string; switchAfterChange?: boolean; p
     return { id: 'native-' + factories, type: kind, position: { x: 0, y: 0 }, data: initialized, ...config };
   };
   const native: any = {
-    factories: { text: make('text'), textGenerate: make('text'), image: make('image'), imageUpload: make('image'), audio: make('audio'), group: make('group') },
+    factories: { text: make('text'), textGenerate: make('text'), image: make('image'), imageUpload: make('image'), videoUpload: make('video'), audio: make('audio'), group: make('group') },
     modelRegistries: { image: options.modelDefaults?.image ?? {}, audio: [{ model: 'audio-model', provider: 'native' }, ...Object.keys(options.modelDefaults?.audio ?? {}).map(model => ({ model, provider: 'native' }))] },
     flush: async () => { flushes++; if (options.mutateDuringFlush && nodes.length) nodes = nodes.map(n => ({ ...n, data: { ...n.data, text: 'latest-after-save' } })); return options.flushResult ?? 'saved'; },
-    upload: async () => { uploads++; return { url: 'https://assets.example/test.png' }; },
+    upload: async (file: File) => { uploads++; uploadedFile = file; return { url: 'https://assets.example/test.png' }; },
     policy: { getState: () => ({ mergedPolicy: options.policy ?? {} }) }, selection: { getState: () => ({ setSelectedNodes() {} }) },
   };
   if (options.mentions) native.mentions = {
@@ -71,7 +72,27 @@ function fixture(options: { flushResult?: string; switchAfterChange?: boolean; p
       async get(assetId: string) { libraryGets++; return options.mentions?.libraryItems?.find(item => item.assetId === assetId) ?? null; },
     },
   };
-  const sandbox: any = { location, document, native, console, Map, Set, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (value: any) => value };
+  const sandbox: any = { location, document, native, console, Map, Set, File, atob, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (value: any) => value };
+  if (options.webDockbar) {
+    delete native.factories.text;
+    delete native.factories.textGenerate;
+    delete native.factories.audio;
+    Object.assign(location, { origin: 'https://app.tapnow.ai', href: 'https://app.tapnow.ai/canvas/' + canvasId });
+    let open = false;
+    const trigger = { __reactProps$test: { onClick() { open = true; } } };
+    const button = { disabled: false, getAttribute: () => null, closest: () => trigger };
+    const item = { getAttribute: () => options.webDockbar?.disabled ? 'true' : null, click() {
+      open = false;
+      nodes.push({ id: 'native-menu-text', type: 'text', position: { x: 0, y: 0 }, data: { type: 'generate', title: 'Text', text: '', prompt: '', params: { model: 'native-default', provider: 'native' } } });
+      if (options.webDockbar?.extraNode) nodes.push({ id: 'concurrent-node', type: 'image', position: { x: 0, y: 0 }, data: {} });
+    } };
+    const audioItem = { getAttribute: () => null, click() {
+      open = false;
+      nodes.push({ id: 'native-menu-audio', type: 'audio', position: { x: 0, y: 0 }, data: { type: 'default', title: 'Audio', src: '', params: { model: 'native-default', provider: 'native', scene: 'Music' } } });
+    } };
+    document.querySelector = (selector: string): any => selector.includes('dockbar-add-node-btn') ? button : selector.includes('dockbar-add-text-node-btn') && open ? item : selector.includes('dockbar-add-audio-node-btn') && open ? audioItem : null;
+    sandbox.MouseEvent = class { constructor(public type: string, public options: any) {} };
+  }
   if (options.history) {
     const restored = [{ id: 'restored-new-id', type: 'text', position: { x: 0, y: 0 }, data: { text: 'restored content' } }];
     sandbox.queue = { flush() {} };
@@ -102,8 +123,84 @@ function fixture(options: { flushResult?: string; switchAfterChange?: boolean; p
     currentEdges: () => JSON.parse(JSON.stringify(edges)),
     mentionState: () => ({ promptDraft, promptChanges, libraryGets }),
     historyCalls: () => ({ ...historyCalls }),
+    uploadedFile: () => uploadedFile,
   };
 }
+
+test('大视频仅在所有分块完整到达后调用原生上传，并保留文件字节与名称', async () => {
+  const f = fixture(), transferId = 'test-transfer';
+  assert.equal((await f.dispatch('importFileBegin', { canvasId, transferId, size: 6, name: '原始视频.mp4', mimeType: 'video/mp4' })).ok, true);
+  assert.equal((await f.dispatch('importFileChunk', { canvasId, transferId, offset: 0, base64: Buffer.from('abc').toString('base64') })).ok, true);
+  const incomplete = await f.dispatch('importAsset', { canvasId, kind: 'video', file: { transferId } });
+  assert.equal(incomplete.error.code, 'INCOMPLETE_TRANSFER'); assert.equal(f.counters().uploads, 0);
+  assert.equal((await f.dispatch('importFileChunk', { canvasId, transferId, offset: 3, base64: Buffer.from('def').toString('base64') })).ok, true);
+  const uploaded = await f.dispatch('importAsset', { canvasId, kind: 'video', file: { transferId } });
+  assert.equal(uploaded.ok, true); assert.equal(f.counters().uploads, 1);
+  assert.equal(await f.uploadedFile()!.text(), 'abcdef'); assert.equal(f.uploadedFile()!.name, '原始视频.mp4'); assert.equal(f.uploadedFile()!.type, 'video/mp4');
+  assert.equal(f.currentNodes()[0].data.title, '原始视频.mp4');
+  assert.equal((await f.dispatch('importAsset', { canvasId, kind: 'video', file: { transferId } })).error.code, 'INCOMPLETE_TRANSFER');
+});
+
+test('视频分块拒绝乱序、超量及跨画布请求，取消后释放旧传输', async () => {
+  const f = fixture(), transferId = 'guarded-transfer';
+  const begin = { canvasId, transferId, size: 3, name: 'sample.mp4', mimeType: 'video/mp4' };
+  await f.dispatch('importFileBegin', begin);
+  const chunk = { canvasId, transferId, offset: 0, base64: Buffer.from('abc').toString('base64') };
+  assert.equal((await f.dispatch('importFileChunk', { ...chunk, offset: 1 })).error.code, 'INVALID_CHUNK');
+  assert.equal((await f.dispatch('importFileChunk', { ...chunk, base64: Buffer.from('abcd').toString('base64') })).error.code, 'INVALID_CHUNK');
+  assert.equal((await f.dispatch('importFileChunk', { ...chunk, canvasId: otherCanvasId })).error.code, 'CANVAS_CHANGED');
+  await f.dispatch('importFileAbort', { canvasId: otherCanvasId, transferId });
+  assert.equal((await f.dispatch('importFileBegin', begin)).error.code, 'BUSY');
+  await f.dispatch('importFileAbort', { canvasId, transferId });
+  assert.equal((await f.dispatch('importFileBegin', begin)).ok, true);
+  assert.equal(f.counters().uploads, 0);
+});
+
+test('网页文字创建复用原生菜单默认模式，编辑后保存且不提交生成', async () => {
+  const f = fixture({ webDockbar: {} });
+  const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'create', kind: 'text', clientId: 'new', data: { title: '网页测试', text: 'hello' }, position: { x: 25, y: 50 } }] });
+  assert.equal(result.results[0].ok, true);
+  assert.equal(result.aliases.new, 'native-menu-text');
+  assert.equal(result.persistence.confirmed, true);
+  const n = f.currentNodes()[0];
+  assert.equal(n.data.type, 'generate');
+  assert.equal(n.data.text, 'hello');
+  assert.deepEqual(n.position, { x: 25, y: 50 });
+  assert.equal(n.data.params.model, 'native-default');
+  assert.equal(f.counters().factories, 0);
+  assert.equal(f.counters().generations, 0);
+});
+
+test('网页文字菜单禁用或指定模型时不创建节点', async () => {
+  for (const setup of [{ webDockbar: { disabled: true }, data: {} }, { webDockbar: {}, data: { params: { model: 'unsupported' } } }]) {
+    const f = fixture(setup);
+    const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'create', kind: 'text', data: setup.data }] });
+    assert.equal(result.results[0].ok, false);
+    assert.equal(f.currentNodes().length, 0);
+    assert.equal(f.counters().generations, 0);
+  }
+});
+
+test('网页音频菜单回退保留默认模型与场景，通用提示词写入 params.prompt 且不提交生成', async () => {
+  const f = fixture({ webDockbar: {} });
+  const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'create', kind: 'audio', mode: 'generate', data: { title: '音频测试', prompt: 'music prompt' } }] });
+  assert.equal(result.results[0].ok, true);
+  const n = f.currentNodes()[0];
+  assert.equal(n.type, 'audio');
+  assert.equal(n.data.params.prompt, 'music prompt');
+  assert.equal(n.data.params.scene, 'Music');
+  assert.equal(n.data.params.model, 'native-default');
+  assert.equal(n.data.prompt, undefined);
+  assert.equal(f.counters().generations, 0);
+});
+
+test('网页创建遇到并发新增节点时报告实际新增 ID，不继续套用配置', async () => {
+  const f = fixture({ webDockbar: { extraNode: true } });
+  const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'create', kind: 'text', data: { text: 'must not apply' } }] });
+  assert.equal(result.results[0].error.code, 'EDIT_OUTCOME_UNKNOWN');
+  assert.deepEqual(result.results[0].error.details.addedNodeIds, ['native-menu-text', 'concurrent-node']);
+  assert.equal(f.currentNodes()[0].data.text, '');
+});
 
 test('运行时拒绝过期 canvasId，原生编辑、上传、生成均不调用', async () => {
   const f = fixture();
@@ -149,6 +246,17 @@ test('批次中失败停止后续操作，已完成部分仍报告持久化结�
   assert.equal(result.skipped, 1);
   assert.equal(f.currentNodes().length, 1);
   assert.equal(f.counters().flushes, 1);
+});
+
+test('刷新后原生连线端口 right/left 与省略端口等价，重复连接复用原有边', async () => {
+  const f = fixture({ initialNodes: ['source', 'target'].map(id => ({ id, type: 'text', position: { x: 0, y: 0 }, data: {} })),
+    initialEdges: [{ id: 'persisted-edge', source: 'source', target: 'target', sourceHandle: 'right', targetHandle: 'left' }] });
+  const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'connect', source: 'source', target: 'target' }] });
+  assert.equal(result.results[0].ok, true);
+  assert.equal(result.results[0].existing, true);
+  assert.equal(result.results[0].edgeId, 'persisted-edge');
+  assert.equal(f.currentEdges().length, 1);
+  assert.equal(f.counters().edits, 0);
 });
 
 test('等待界面更新时画布切换，停止后续编辑与保存', async () => {

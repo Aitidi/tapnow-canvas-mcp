@@ -14,8 +14,12 @@ export async function discoverNativeModules(): Promise<any> {
         const url = new URL(value, base.href);
         // Only the currently exposed, known native capability modules. Never
         // import every preloaded UI component: module evaluation can have effects.
-        return url.protocol === base.protocol && url.hostname === base.hostname &&
+        if (url.username || url.password || url.search || url.hash) return false;
+        const legacy = url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
           /^\/assets\/(?:index|UnlimitedModeToggle|course-api-base-url|group)-[^/]+\.js$/.test(url.pathname);
+        const web = base.origin === 'https://app.tapnow.ai' && url.origin === 'https://fe-assets.tapnow.media' &&
+          /^\/[a-f0-9]{40}\/assets\/(?:vendor-pkg-canvas|vendor-packages)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
+        return legacy || web;
       } catch { return false; }
     });
   const factories: Record<string, any> = {};
@@ -35,7 +39,8 @@ export async function discoverNativeModules(): Promise<any> {
   for (const url of moduleUrls) {
     let module: any;
     try { module = await import(url); } catch { failures.push(url); continue; }
-    for (const value of Object.values(module) as any[]) {
+    const scoped = base.origin === 'https://app.tapnow.ai' ? (globalThis as any).__tapnowCanvasMcpScopedNative : undefined;
+    for (const value of [...Object.values(module), ...Array.isArray(scoped) ? scoped : []] as any[]) {
       try {
         if (typeof value === 'function') {
           const src = source(value);

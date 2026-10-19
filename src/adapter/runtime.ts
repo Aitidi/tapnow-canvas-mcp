@@ -137,6 +137,52 @@ export function installRuntime(native: any) {
     b.props.onNodesChange(list);
     return settle(b.id);
   }
+  const webNodeCreationAvailable = () => location.origin === 'https://app.tapnow.ai' &&
+    !!document.querySelector('[data-testid="canvas-dockbar-add-node-btn"]');
+  const supportedKinds = () => [...new Set([...Object.keys(native.factories).filter(k => typeof native.factories[k] === 'function'),
+    ...webNodeCreationAvailable() ? ['text', 'textGenerate', 'audio'] : []])];
+  // The current web bundle keeps the text/audio constructors private. Use the
+  // native menu to create its default node, then the regular native edit path.
+  // Preserve the web application's default mode. Creating a node never submits
+  // generation; model changes require a separately identifiable native factory.
+  async function createWebNode(b: any, op: any) {
+    writable(b, 'creatable');
+    if (!webNodeCreationAvailable() || !['text', 'audio'].includes(op.kind) || op.mode === 'upload' || op.kind === 'audio' && op.data?.src) failure('CAPABILITY_UNAVAILABLE', '当前版本未提供该节点类型的原生创建入口。');
+    if (op.data?.params?.model) failure('CAPABILITY_UNAVAILABLE', '网页原生菜单创建仅支持当前默认模型，暂不支持指定模型。');
+    const initial = new Set(nodes(b).map((n: any) => n.id));
+    const itemSelector = `[data-testid="canvas-dockbar-add-${op.kind}-node-btn"]`;
+    let item = document.querySelector(itemSelector) as HTMLElement | null;
+    if (!item) {
+      const button = document.querySelector('[data-testid="canvas-dockbar-add-node-btn"]') as HTMLButtonElement;
+      if (button.disabled || button.getAttribute('aria-disabled') === 'true') failure('EDITING_BLOCKED', '原生创建菜单当前不可用。');
+      const trigger = button.closest('[aria-haspopup="dialog"]') as any;
+      const propsKey = trigger && Object.keys(trigger).find(key => key.startsWith('__reactProps$'));
+      const open = propsKey && trigger[propsKey]?.onClick;
+      if (typeof open !== 'function') failure('CAPABILITY_UNAVAILABLE', '未找到原生创建菜单的打开入口。');
+      open(new MouseEvent('click', { bubbles: true, button: 0 }));
+      const started = Date.now();
+      do { b = await settle(b.id); item = document.querySelector(itemSelector); } while (!item && Date.now() - started < 3000);
+    }
+    if (!item || item.getAttribute('aria-disabled') === 'true' || item.getAttribute('data-disabled') === 'true') failure('CAPABILITY_UNAVAILABLE', '原生节点创建菜单不可用。');
+    guard(b.id); writable(b, 'creatable');
+    item!.click();
+    b = await waitFor(b.id, current => nodes(current).some((n: any) => !initial.has(n.id)));
+    const added = nodes(b).filter((n: any) => !initial.has(n.id));
+    if (added.length !== 1 || added[0].type !== op.kind || op.kind === 'text' && (!['pure', 'generate'].includes(added[0].data?.type) || op.mode === 'generate' && added[0].data.type !== 'generate') || op.kind === 'audio' && added[0].data?.type === 'upload') {
+      failure('EDIT_OUTCOME_UNKNOWN', '原生菜单未返回唯一的兼容节点；请重新读取画布，勿重复创建。', { addedNodeIds: added.map((n: any) => n.id) });
+    }
+    const created = added[0];
+    const data = clean(op.data ?? {});
+    if (op.kind === 'audio' && typeof data.prompt === 'string') { data.params = { ...data.params, prompt: data.prompt }; delete data.prompt; }
+    const next = { ...created, data: { ...created.data, ...data, ...(data.params ? { params: { ...created.data.params, ...data.params } } : {}) }, selected: false,
+      position: op.position ?? { x: 0, y: 0 }, ...(op.width ? { width: op.width } : {}), ...(op.height ? { height: op.height } : {}) };
+    b = await changes(b, [{ type: 'replace', id: created.id, item: next }]);
+    const actual = node(b, created.id);
+    if (JSON.stringify(actual.data) !== JSON.stringify(next.data) || JSON.stringify(actual.position) !== JSON.stringify(next.position)) {
+      failure('EDIT_REJECTED', '已创建原生节点，但应用未接受后续配置。', { createdNodeId: created.id });
+    }
+    return { b, node: actual };
+  }
   async function runEdit(args: any) {
     guard(args.canvasId);
     const results: any[] = [], aliases = new Map<string, string>();
@@ -151,8 +197,13 @@ export function installRuntime(native: any) {
           case 'create': {
             writable(b, 'creatable');
             if (op.clientId && aliases.has(op.clientId)) failure('DUPLICATE_CLIENT_ID', '同一批次中的 clientId 不得重复。');
-            const n = makeNode(b, op);
-            b = await changes(b, [{ type: 'add', item: n }]);
+            let n: any;
+            if (['text', 'audio'].includes(op.kind) && !(op.kind === 'text' && op.mode === 'generate' ? native.factories.textGenerate : native.factories[op.kind]) && webNodeCreationAvailable()) {
+              const created = await createWebNode(b, op); b = created.b; n = created.node;
+            } else {
+              n = makeNode(b, op);
+              b = await changes(b, [{ type: 'add', item: n }]);
+            }
             const actual = node(b, n.id);
             if (op.clientId) aliases.set(op.clientId, n.id);
             result = { nodeId: actual.id, type: actual.type }; break;
@@ -186,7 +237,11 @@ export function installRuntime(native: any) {
             const connection = { source: resolve(op.source), target: resolve(op.target), sourceHandle: op.sourceHandle ?? null, targetHandle: op.targetHandle ?? null };
             node(b, connection.source); node(b, connection.target);
             if (connection.source === connection.target) failure('INVALID_CONNECTION', '不允许节点连接到自身。');
-            const duplicate = edges(b).find((e: any) => e.source === connection.source && e.target === connection.target && (e.sourceHandle ?? null) === connection.sourceHandle && (e.targetHandle ?? null) === connection.targetHandle);
+            // Tapnow hydrates omitted handles as right/left after reloading.
+            // Treat those defaults identically to avoid a duplicate-connect error
+            // when the same request is made against a restored graph.
+            const duplicate = edges(b).find((e: any) => e.source === connection.source && e.target === connection.target &&
+              (e.sourceHandle ?? 'right') === (connection.sourceHandle ?? 'right') && (e.targetHandle ?? 'left') === (connection.targetHandle ?? 'left'));
             if (duplicate) { result = { edgeId: duplicate.id, existing: true }; break; }
             if (typeof b.props.isValidConnection === 'function' && !b.props.isValidConnection(connection)) failure('INVALID_CONNECTION', 'Tapnow 不允许这两个节点建立该连接。');
             b = await changes(b, nodes(b).filter((n: any) => n.selected).map((n: any) => ({ id: n.id, type: 'select', selected: false })));
@@ -461,19 +516,50 @@ export function installRuntime(native: any) {
     if (!record.taskId && record.state !== 'failed') record.state = 'outcome_unknown';
     return { ...record, taskInfo: record.taskId ? node(bindings(), args.nodeId).data?.taskInfo ?? null : null, persistence: await flush(args.canvasId) };
   }
+  let stagedImport: { transferId: string; canvasId: string; size: number; name: string; mimeType: string; received: number; parts: Uint8Array[] } | undefined;
+  function importFilePart(action: string, args: any) {
+    if (action === 'importFileAbort') {
+      if (stagedImport?.transferId === args.transferId && stagedImport?.canvasId === args.canvasId) stagedImport = undefined;
+      return { cleared: !stagedImport };
+    }
+    guard(args.canvasId); writable(bindings(), 'creatable');
+    if (action === 'importFileBegin') {
+      if (stagedImport) failure('BUSY', '已有素材正在传输，请先结束原请求。');
+      if (!Number.isInteger(args.size) || args.size <= 0 || args.size > 500 * 1024 * 1024 || typeof args.name !== 'string' || !args.name || !/^video\//.test(args.mimeType) || typeof args.transferId !== 'string' || !args.transferId) failure('INVALID_ARGUMENT', '大视频传输参数无效。');
+      stagedImport = { transferId: args.transferId, canvasId: args.canvasId, size: args.size, name: args.name, mimeType: args.mimeType, received: 0, parts: [] };
+      return { received: 0 };
+    }
+    const staged = stagedImport;
+    if (!staged || staged.transferId !== args.transferId || staged.canvasId !== args.canvasId) failure('TRANSFER_NOT_FOUND', '未找到当前素材传输。');
+    if (args.offset !== staged!.received || typeof args.base64 !== 'string' || args.base64.length > 4 * 1024 * 1024) failure('INVALID_CHUNK', '素材分块顺序或大小无效。');
+    const bytes = Uint8Array.from(atob(args.base64), (c: string) => c.charCodeAt(0));
+    if (!bytes.length || bytes.length > 2 * 1024 * 1024 || staged!.received + bytes.length > staged!.size) failure('INVALID_CHUNK', '素材分块超过预期长度。');
+    staged!.parts.push(bytes); staged!.received += bytes.length;
+    return { received: staged!.received };
+  }
   async function importAsset(args: any) {
     guard(args.canvasId); let b = bindings(); writable(b, 'creatable');
     let info: any = { url: args.url };
+    let importedName: string | undefined;
     if (args.file) {
       if (typeof native.upload !== 'function') failure('CAPABILITY_UNAVAILABLE', '未找到当前应用的原生上传管理器。');
-      const bytes = Uint8Array.from(atob(args.file.base64), (c: string) => c.charCodeAt(0));
-      const file = new File([bytes], args.file.name, { type: args.file.mimeType });
+      let file: File;
+      if (args.file.transferId) {
+        const staged = stagedImport;
+        if (!staged || staged.transferId !== args.file.transferId || staged.canvasId !== args.canvasId || staged.received !== staged.size || args.kind !== 'video') failure('INCOMPLETE_TRANSFER', '视频尚未完整传输，未调用原生上传。');
+        file = new File(staged!.parts as BlobPart[], staged!.name, { type: staged!.mimeType });
+        stagedImport = undefined;
+      } else {
+        const bytes = Uint8Array.from(atob(args.file.base64), (c: string) => c.charCodeAt(0));
+        file = new File([bytes], args.file.name, { type: args.file.mimeType });
+      }
+      importedName = file.name;
       info = await native.upload(file);
       guard(args.canvasId);
     }
     if (!info?.url) failure('UPLOAD_FAILED', '应用未返回上传后的素材 URL。');
     b = bindings(); writable(b, 'creatable');
-    const n = makeNode(b, { kind: args.kind, mode: 'upload', position: args.position, data: { title: args.title ?? args.file?.name ?? 'Imported asset', src: info.url, type: 'upload', ...(info.file_id ? { fileId: info.file_id } : {}), ...(info.duration ? { params: { duration: info.duration } } : {}) } });
+    const n = makeNode(b, { kind: args.kind, mode: 'upload', position: args.position, data: { title: args.title ?? importedName ?? 'Imported asset', src: info.url, type: 'upload', ...(info.file_id ? { fileId: info.file_id } : {}), ...(info.duration ? { params: { duration: info.duration } } : {}) } });
     b = await changes(b, [{ type: 'add', item: n }]); node(b, n.id);
     return { canvasId: b.id, nodeId: n.id, url: info.url, persistence: await flush(b.id) };
   }
@@ -485,19 +571,20 @@ export function installRuntime(native: any) {
           let canvas: any;
           try { const b = bindings(); canvas = { canvasId: b.id, nodeCount: nodes(b).length, edgeCount: edges(b).length, editingAvailable: b.props.nodesDraggable !== false, viewportAvailable: !!b.viewport }; }
           catch (e: any) { canvas = { error: { code: e.code, message: e.message } }; }
-          result = { url: location.href, title: document.title, desktop: w.tapDesktop?.isDesktop === true, adapterVersion: 1, modules: native.moduleUrls, factories: Object.keys(native.factories).filter(k => typeof native.factories[k] === 'function'), nativeSaveAvailable: typeof native.flush === 'function', nativeUploadAvailable: typeof native.upload === 'function', nativeMentionsAvailable: !!native.mentions?.parseAsset, nativeLibraryAvailable: !!native.mentions?.library?.list, ...(native.mentionError ? { mentionError: native.mentionError } : {}), canvas }; break;
+          result = { url: location.href, title: document.title, desktop: w.tapDesktop?.isDesktop === true, adapterVersion: 1, modules: native.moduleUrls, factories: supportedKinds(), creationMethods: Object.fromEntries(['text', 'audio'].map(kind => [kind, native.factories[kind] ? 'native-factory' : webNodeCreationAvailable() ? 'native-dockbar' : 'unavailable'])), nativeSaveAvailable: typeof native.flush === 'function', nativeUploadAvailable: typeof native.upload === 'function', nativeMentionsAvailable: !!native.mentions?.parseAsset, nativeLibraryAvailable: !!native.mentions?.library?.list, ...(native.mentionError ? { mentionError: native.mentionError } : {}), canvas }; break;
         }
         case 'inspect': result = snapshot(bindings(), args); break;
         case 'edit': result = await runEdit(args); break;
         case 'view': result = await setView(args); break;
         case 'save': result = { canvasId: args.canvasId, persistence: await flush(args.canvasId) }; break;
-        case 'capabilities': result = { models: clean(native.modelRegistries), supportedNodeKinds: Object.keys(native.factories).filter(k => typeof native.factories[k] === 'function'), submissionMethod: 'native-generation-panel' }; break;
+        case 'capabilities': result = { models: clean(native.modelRegistries), supportedNodeKinds: supportedKinds(), submissionMethod: 'native-generation-panel' }; break;
         case 'prepareGeneration': result = await prepareGeneration(args); break;
         case 'submitGeneration': result = await submitGeneration(args); break;
         case 'generationStatus': {
           guard(args.canvasId); const n = node(bindings(), args.nodeId);
           result = { canvasId: args.canvasId, nodeId: args.nodeId, taskInfo: n.data?.taskInfo ?? null, result: { src: n.data?.src, text: n.data?.text, options: n.data?.options }, submission: args.requestId ? submissions.get(args.canvasId + ':' + args.requestId) ?? null : null }; break;
         }
+        case 'importFileBegin': case 'importFileChunk': case 'importFileAbort': result = importFilePart(action, args); break;
         case 'importAsset': result = await importAsset(args); break;
         case 'promptReferences': result = await listPromptReferences(args); break;
         case 'promptSet': result = await setPromptReferences(args); break;

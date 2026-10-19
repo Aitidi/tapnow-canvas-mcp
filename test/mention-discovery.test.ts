@@ -4,6 +4,8 @@ import { runInNewContext } from 'node:vm';
 import { discoverMentionNative } from '../src/adapter/mention-discovery.js';
 
 type FixtureOptions = {
+  webSplit?: boolean;
+  webScoped?: boolean;
   personal?: number;
   team?: number;
   invalidPersonal?: number[];
@@ -41,6 +43,10 @@ async function fixture(options: FixtureOptions = {}) {
     location: { href: 'https://app.example/canvas/test' },
     document: { scripts: [{ src: 'https://app.example/assets/UnlimitedModeToggle-test.js' }], querySelectorAll: () => [] },
   };
+  if (options.webSplit || options.webScoped) {
+    sandbox.location.href = 'https://app.tapnow.ai/canvas/test';
+    sandbox.document.scripts = ['vendor-pkg-canvas-test1234.js', 'vendor-packages-test1234.js'].map(name => ({ src: 'https://fe-assets.tapnow.media/' + 'a'.repeat(40) + '/assets/' + name }));
+  }
   // Source signatures intentionally model the production export recognizers.
   // Only module loading is substituted; discovery and pagination run unchanged.
   runInNewContext(`
@@ -51,13 +57,32 @@ async function fixture(options: FixtureOptions = {}) {
     function normalize(a){return {...a,asset_type:a.asset_type,compliance_status:a.compliance_status};}
     function textContent(a){if(typeof a.content==='string')return a.content;return a.metadata?.fields?.[0]?.source_url??a.thumbnail_url??a.name;}
     const api={searchAssets:async function(args){return handler(endpoints.SEARCH_ASSETS,args)},getAssetDetail:async function(args){return handler(endpoints.GET_ASSET_DETAIL,args)},listAssetsForMention:async function(args){return handler(endpoints.LIST_ASSETS_FOR_MENTION,args)}};
-    globalThis.nativeModule={parser,tokenParser,expander,normalize,textContent,api};
+    function relationSchema(a){return {asset_id:a.asset_id,asset_type:a.asset_type,compliance_status:a.compliance_status};}
+    globalThis.nativeModule={relationSchema,parser,tokenParser,expander,normalize,textContent,api};
   `, sandbox);
+  if (options.webScoped) sandbox.__tapnowCanvasMcpScopedNative = Object.values(sandbox.nativeModule).filter(value => typeof value === 'function');
+  sandbox.load = async (url: string) => options.webScoped ? { relationSchema: sandbox.nativeModule.relationSchema, api: sandbox.nativeModule.api } : options.webSplit
+    ? Object.fromEntries(Object.entries(sandbox.nativeModule).filter(([key]) => url.includes('vendor-pkg-canvas-') ? ['parser', 'tokenParser', 'expander'].includes(key) : ['normalize', 'textContent', 'api'].includes(key)))
+    : sandbox.nativeModule;
   const source = discoverMentionNative.toString();
   assert.equal(source.split('await import(moduleUrl)').length, 2, '测试仅替换唯一原生模块加载位置');
-  const api = await runInNewContext(`(${source.replace('await import(moduleUrl)', 'await Promise.resolve(nativeModule)')})()`, sandbox);
+  const api = await runInNewContext(`(${source.replace('await import(moduleUrl)', 'await load(moduleUrl)')})()`, sandbox);
   return { list: async (args: any = {}) => JSON.parse(JSON.stringify(await api.library.list(args))), calls };
 }
+
+test('网页 @素材发现跨两个官方 CDN 包组合原生解析与素材库，发现阶段不发起素材请求', async () => {
+  const f = await fixture({ webSplit: true, personal: 2, team: 0 });
+  assert.deepEqual(f.calls, []);
+  const result = await f.list({ limit: 2 });
+  assert.deepEqual(result.items.map((item: any) => item.assetId), ['personal-0', 'personal-1']);
+});
+
+test('网页私有作用域提供真实解析器，素材实体归一化保留 ID 并忽略关系 schema', async () => {
+  const f = await fixture({ webScoped: true, personal: 2, team: 0 });
+  assert.deepEqual(f.calls, []);
+  const result = await f.list({ limit: 2 });
+  assert.deepEqual(result.items.map((item: any) => item.assetId), ['personal-0', 'personal-1']);
+});
 
 test('@素材库原生发现不请求网络，个人库超过前200项仍可分页', async () => {
   const f = await fixture({ personal: 350, team: 20 });

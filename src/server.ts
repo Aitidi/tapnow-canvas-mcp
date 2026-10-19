@@ -2,7 +2,7 @@ import { McpServer, type CallToolResult } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
-import { TapnowService } from './service.js';
+import { TapnowService, type CanvasService } from './service.js';
 import { errorResult } from './errors.js';
 
 const id = z.string().min(1).max(512);
@@ -61,7 +61,7 @@ function result(value: unknown): CallToolResult {
   return { content: [{ type: 'text', text: JSON.stringify(payload) }], structuredContent: payload, ...(payload.ok === false ? { isError: true } : {}) };
 }
 
-export function createServer(service = new TapnowService()) {
+export function createServer(service: CanvasService = new TapnowService()) {
   const server = new McpServer({ name: 'tapnow-canvas', version: '0.2.0' });
   function register<S extends z.ZodRawShape>(name: string, description: string, schema: z.ZodObject<S>, fn: (args: z.infer<z.ZodObject<S>>) => Promise<unknown>, readOnly = false, destructive = false) {
     server.registerTool(name, {
@@ -76,7 +76,7 @@ export function createServer(service = new TapnowService()) {
   register('tapnow_canvas_read', '读取当前画布 ID、节点、连线、选中项与保存状态。首次编辑前调用。', z.strictObject({ includeData: z.boolean().optional(), nodeIds: ids.optional() }), a => service.inspect(a), true);
   register('tapnow_canvas_edit', '使用应用自身编辑入口顺序执行批量操作，逐项报告结果。src 应使用已导入素材地址；本地文件使用素材导入工具。生成节点只配置参数，不付费提交。部分失败时先读取状态，不要更换 requestId 盲目重试。', z.strictObject({ ...canvas, requestId, operations: z.array(editOperationSchema).min(1).max(100) }), a => service.edit(a), false, true);
   register('tapnow_canvas_view', '调整画布视图，支持适配全部节点、聚焦指定节点或设置视口。', z.strictObject({ ...canvas, action: z.enum(['fit', 'focus', 'set']), nodeIds: ids.optional(), viewport: z.strictObject({ x: z.number().finite(), y: z.number().finite(), zoom: z.number().positive().max(10) }).optional() }).refine(a => a.action !== 'set' || Boolean(a.viewport), 'set 需要 viewport').refine(a => a.action !== 'focus' || Boolean(a.nodeIds?.length), 'focus 需要 nodeIds'), a => service.view(a));
-  register('tapnow_asset_import', '创建媒体节点。本地绝对路径走应用上传，最大 50 MiB；HTTP(S) URL 直接引用远程素材，不重新上传。path 与 url 恰好提供一个。', z.strictObject({ ...canvas, requestId, path: z.string().min(1).max(32000).optional(), url: httpUrl.max(20000).optional(), kind: z.enum(['image', 'video', 'audio']).optional(), position: position.optional() }).refine(a => Boolean(a.path) !== Boolean(a.url), 'path 与 url 必须且只能提供一个'), a => service.importAsset(a));
+  register('tapnow_asset_import', '创建媒体节点。本地绝对路径走应用上传，视频最大 500 MiB，其他媒体最大 50 MiB；应用自身限制仍适用。大视频分块传输，客户端应允许至少 10 分钟调用时间。HTTP(S) URL 直接引用远程素材，不重新上传。path 与 url 恰好提供一个。', z.strictObject({ ...canvas, requestId, path: z.string().min(1).max(32000).optional(), url: httpUrl.max(20000).optional(), kind: z.enum(['image', 'video', 'audio']).optional(), position: position.optional() }).refine(a => Boolean(a.path) !== Boolean(a.url), 'path 与 url 必须且只能提供一个'), a => service.importAsset(a));
   register('tapnow_prompt_references', '只读查询原生 @素材 候选，不选择节点或打开面板。source=canvas 返回当前画布素材的 nodeId；source=library 返回当前账号可读单素材的 assetId，旧模板包不支持。支持 query、limit、offset 分页；可提供目标 nodeId 筛选可引用素材。', promptReferencesSchema, a => service.promptReferences(a), true);
   register('tapnow_prompt_set', '按 text/reference 段整体替换生成节点提示词并插入原生 @素材 引用。canvas 引用自动建立素材到目标节点的连线；library 引用由原生素材库查询元数据并写入原生素材 token，不新增画布连线。替换提示词不会删除已有连线。library 仅支持当前账号可读单素材，不支持旧模板包。普通 @ 文字可放入 text；保留的原生模板 token（如 {{Asset:...}}、{{Image 1}}）必须使用 reference 段，禁止手写或传入 URL/token。最多 200 段、总文字 200000 字符、32 个引用段。仅配置提示词，不提交生成、不付费。', promptSetSchema, a => service.promptSet(a));
   register('tapnow_generation_capabilities', '读取当前应用可用的生成类型、模型和参数，提交前应核对实际能力。', z.strictObject({}), () => service.generationCapabilities(), true);
@@ -99,7 +99,8 @@ export function createServer(service = new TapnowService()) {
 }
 
 export async function main() {
-  const { server, service } = createServer();
+  const implementation = process.env.TAPNOW_RESIDENT === '1' ? (await import('./resident.js')).createResidentService() : new TapnowService();
+  const { server, service } = createServer(implementation);
   const shutdown = async () => { await service.close(); await server.close(); };
   process.once('SIGINT', () => { void shutdown(); });
   process.once('SIGTERM', () => { void shutdown(); });

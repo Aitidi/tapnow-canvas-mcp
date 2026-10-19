@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, open, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test, type TestContext } from 'node:test';
@@ -82,6 +82,71 @@ test('同导入请求文件内容改变时拒绝重用，避免错误重放上�
   await writeFile(path, 'different sample content');
   await assert.rejects(service.importAsset(args), (error: any) => error.code === 'REQUEST_ID_CONFLICT');
   assert.equal(imports, 1);
+});
+
+test('超过 50 MiB 的视频分块发送，完成请求重放时不再次传输或上传', async t => {
+  const f = await fixture(t), service = f.create(), path = join(f.directory, 'large.mp4');
+  const handle = await open(path, 'w'); await handle.truncate(51 * 1024 * 1024); await handle.close();
+  let received = 0, chunks = 0, imports = 0, aborted = 0;
+  (service as any).invoke = async (action: string, args: any, timeout: number) => {
+    if (action === 'importFileBegin') assert.equal(args.size, 51 * 1024 * 1024);
+    if (action === 'importFileChunk') {
+      assert.equal(args.offset, received);
+      const bytes = Buffer.from(args.base64, 'base64'); assert.ok(bytes.length <= 2 * 1024 * 1024);
+      received += bytes.length; chunks++;
+    }
+    if (action === 'importAsset') { imports++; assert.equal(received, 51 * 1024 * 1024); assert.ok(args.file.transferId); assert.equal(args.file.base64, undefined); assert.equal(timeout, 600000); }
+    if (action === 'importFileAbort') aborted++;
+    return { ok: true, nodeId: 'large-video' };
+  };
+  const args = { canvasId, path, requestId: 'large-video-request' };
+  assert.equal((await service.importAsset(args)).nodeId, 'large-video');
+  assert.equal((await service.importAsset(args)).replayed, true);
+  assert.equal(imports, 1); assert.equal(chunks, 26); assert.equal(aborted, 1);
+});
+
+test('大视频分块中断释放临时数据，未知请求不自动再次上传', async t => {
+  const f = await fixture(t), service = f.create(), path = join(f.directory, 'interrupted.mp4');
+  const handle = await open(path, 'w'); await handle.truncate(51 * 1024 * 1024); await handle.close();
+  const calls: string[] = [];
+  (service as any).invoke = async (action: string) => {
+    calls.push(action);
+    if (action === 'importFileChunk') throw new TapnowError('CONNECTION_LOST', 'interrupted');
+    return { ok: true };
+  };
+  const args = { canvasId, path, requestId: 'interrupted-video-request' };
+  await assert.rejects(service.importAsset(args), (e: any) => e.code === 'CONNECTION_LOST');
+  assert.equal(calls.at(-1), 'importFileAbort'); assert.ok(!calls.includes('importAsset'));
+  await assert.rejects(service.importAsset(args), (e: any) => e.code === 'REQUEST_OUTCOME_UNKNOWN');
+  assert.equal(calls.filter(c => c === 'importFileBegin').length, 1);
+});
+
+test('视频超过 500 MiB 或其他媒体超过 50 MiB 时不开始传输', async t => {
+  const f = await fixture(t), service = f.create();
+  const calls: string[] = [];
+  (service as any).invoke = async (action: string) => { calls.push(action); return { ok: true }; };
+  for (const [name, size] of [['huge.mp4', 501], ['huge.wav', 51]] as const) {
+    const path = join(f.directory, name), handle = await open(path, 'w'); await handle.truncate(size * 1024 * 1024); await handle.close();
+    await assert.rejects(service.importAsset({ canvasId, path, requestId: 'oversize-' + name }), (e: any) => e.code === 'FILE_TOO_LARGE');
+  }
+  assert.ok(calls.every(c => c === 'guard'));
+});
+
+test('大视频传输期间原文件内容变化时不调用原生上传', async t => {
+  const f = await fixture(t), service = f.create(), path = join(f.directory, 'changing.mp4');
+  const handle = await open(path, 'w'); await handle.truncate(51 * 1024 * 1024); await handle.close();
+  const calls: string[] = [];
+  (service as any).invoke = async (action: string) => {
+    calls.push(action);
+    if (action === 'importFileBegin') {
+      const changed = await open(path, 'r+');
+      try { await changed.write(Buffer.from([1]), 0, 1, 51 * 1024 * 1024 - 1); }
+      finally { await changed.close(); }
+    }
+    return { ok: true };
+  };
+  await assert.rejects(service.importAsset({ canvasId, path, requestId: 'changing-video-request' }), (e: any) => e.code === 'FILE_CHANGED');
+  assert.ok(!calls.includes('importAsset')); assert.equal(calls.at(-1), 'importFileAbort');
 });
 
 test('@素材列表走只读调用，不建立写入请求账本', async t => {
