@@ -140,6 +140,26 @@ Windows 使用本机命名管道，其他系统使用本机 Unix socket，配合
 
 初次连接先运行只读诊断，检查实际返回的能力。生成需用户明确授权；原生入口无法识别时会返回结构化错误，不会伪造素材 token 或绕过原生保存。
 
+### 同时连接桌面端和网页端
+
+设置 `TAPNOW_TARGET=both` 后，一个 MCP 服务同时管理桌面端和 Chrome 网页端两条连接，每个工具多一个可选参数 `target`：
+
+- `app`：只操作 Tapnow 桌面端，连接 `TAPNOW_DESKTOP_CDP_URL`。
+- `web`：只操作 Chrome 网页画布，连接 `TAPNOW_WEB_CDP_URL`，设置 `TAPNOW_RESIDENT=1` 时复用网页常驻服务。
+- `auto`（默认）：两端都检查，只有一端打开画布时才自动选择；带 `canvasId` 时按画布 ID 选择。两端都打开可用画布时返回 `AMBIGUOUS_TARGET`，不会猜测。
+
+`tapnow_diagnose` 同时报告两端，一端未连接不影响另一端；其他工具的结果带有 `target` 字段，标明实际操作的一端。指定 `target` 可跳过对另一端的检查。
+
+Chrome 在 `chrome://inspect` 启用的远程调试默认也使用 9222 端口，与桌面端默认端口冲突，先启动者占用端口。双端模式下应让桌面端改用其他端口，例如把 Tapnow 快捷方式参数改为 `--remote-debugging-port=9333`，或运行 `npm run launch -- -Port 9333`。
+
+```powershell
+npm run --silent config:codex:both
+node scripts/print-config.mjs json --both
+npm run diagnose:both
+```
+
+生成的配置默认 `TAPNOW_DESKTOP_CDP_URL=http://127.0.0.1:9333`，可在执行前用同名环境变量覆盖。`npm run diagnose:both` 是只读检查，网页常驻服务运行时会复用它。
+
 ### Claude Desktop
 
 1. 执行 `npm run --silent config:claude`。
@@ -273,8 +293,10 @@ Windows 使用本机命名管道，其他系统使用本机 Unix socket，配合
 | --- | --- | --- |
 | `TAPNOW_CDP_URL` | `http://127.0.0.1:9222` | Tapnow 本机调试地址，修改端口时启动参数也需同步修改 |
 | `TAPNOW_STATE_DIR` | 项目目录下的 `.tapnow-mcp/` | 请求账本与跨客户端写入锁的位置 |
-| `TAPNOW_TARGET` | `desktop` | `desktop` 为桌面端，`web` 为 Chrome 网页画布（实验） |
-| `TAPNOW_TARGET_ID` | 不设置 | 明确指定一个调试目标，避免多窗口或多标签歧义 |
+| `TAPNOW_TARGET` | `desktop` | `desktop` 为桌面端，`web` 为 Chrome 网页画布（实验），`both` 为同时连接两端 |
+| `TAPNOW_DESKTOP_CDP_URL` | `http://127.0.0.1:9222` | `both` 模式下桌面端的调试地址；建议改用 9333 等非 9222 端口 |
+| `TAPNOW_WEB_CDP_URL` | `chrome` | `both` 模式下网页端的调试地址 |
+| `TAPNOW_TARGET_ID` | 不设置 | 明确指定一个调试目标，避免多窗口或多标签歧义；`both` 模式下只作用于网页端 |
 | `TAPNOW_CHROME_USER_DATA_DIR` | 系统默认 Chrome 用户数据目录 | `TAPNOW_CDP_URL=chrome` 时查找调试端口文件的位置 |
 | `TAPNOW_RESIDENT` | `0` | `1` 时 MCP 通过本机后台服务复用连接；客户端退出不停止后台服务 |
 

@@ -16,9 +16,14 @@ if (!existsSync(server)) {
   process.exit(1);
 }
 const { CdpConnection } = await import('../dist/cdp.js');
-const endpoint = new CdpConnection().endpoint;
-const env = { TAPNOW_CDP_URL: endpoint };
-for (const name of ['TAPNOW_TARGET', 'TAPNOW_TARGET_ID', 'TAPNOW_CHROME_USER_DATA_DIR', 'TAPNOW_STATE_DIR', 'TAPNOW_RESIDENT']) {
+const env = {};
+if (process.argv.includes('--both')) {
+  // Chrome's own remote debugging defaults to 9222, so the desktop app gets a separate port.
+  process.env.TAPNOW_TARGET = 'both'; process.env.TAPNOW_RESIDENT = '1';
+  env.TAPNOW_DESKTOP_CDP_URL = new CdpConnection(process.env.TAPNOW_DESKTOP_CDP_URL ?? 'http://127.0.0.1:9333', { mode: 'desktop' }).endpoint;
+  env.TAPNOW_WEB_CDP_URL = new CdpConnection(process.env.TAPNOW_WEB_CDP_URL ?? 'chrome', { mode: 'web' }).endpoint;
+} else env.TAPNOW_CDP_URL = new CdpConnection().endpoint;
+for (const name of ['TAPNOW_TARGET','TAPNOW_TARGET_ID', 'TAPNOW_CHROME_USER_DATA_DIR', 'TAPNOW_STATE_DIR', 'TAPNOW_RESIDENT']) {
   if (process.env[name]) env[name] = process.env[name];
 }
 const entry = { command: process.execPath, args: [server], env };

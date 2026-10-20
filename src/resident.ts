@@ -13,14 +13,18 @@ import { serviceMethods, type CanvasService, type ServiceMethod } from './servic
 
 export const residentProtocol = 1;
 export interface ResidentRecord { protocol: number; pid: number; pipe: string; token: string; startedAt: string }
-export interface ResidentConfig { id: string; directory: string; recordPath: string; logPath: string; pipe: string; stateDir: string }
+export interface ResidentConfig { id: string; directory: string; recordPath: string; logPath: string; pipe: string; stateDir: string; env: Record<string, string> }
+export interface ResidentOptions { endpoint?: string; mode?: 'desktop' | 'web'; targetId?: string }
 
-export function residentConfig(): ResidentConfig {
-  const endpoint = new CdpConnection().endpoint;
+export function residentConfig(options: ResidentOptions = {}): ResidentConfig {
+  const endpoint = new CdpConnection(options.endpoint, options).endpoint;
+  const mode = options.mode ?? process.env.TAPNOW_TARGET ?? 'desktop', targetId = options.targetId ?? process.env.TAPNOW_TARGET_ID ?? '';
   const stateDir = resolve(process.env.TAPNOW_STATE_DIR ?? fileURLToPath(new URL('../.tapnow-mcp/', import.meta.url)));
-  const id = digest([homedir(), stateDir, endpoint, process.env.TAPNOW_TARGET ?? 'desktop', process.env.TAPNOW_TARGET_ID ?? '', process.env.TAPNOW_CHROME_USER_DATA_DIR ?? '']).slice(0, 24);
+  const id = digest([homedir(), stateDir, endpoint, mode, targetId, process.env.TAPNOW_CHROME_USER_DATA_DIR ?? '']).slice(0, 24);
   const directory = join(stateDir, 'resident');
-  return { id, directory, stateDir, recordPath: join(directory, id + '.json'), logPath: join(directory, id + '.log'),
+  // The worker rebuilds this config from its environment, so it must receive the same target.
+  const env = { TAPNOW_CDP_URL: endpoint, TAPNOW_TARGET: mode, TAPNOW_TARGET_ID: targetId };
+  return { id, directory, stateDir, env, recordPath: join(directory, id + '.json'), logPath: join(directory, id + '.log'),
     pipe: process.platform === 'win32' ? '\\\\.\\pipe\\tapnow-canvas-' + id : join(tmpdir(), 'tapnow-canvas-' + id + '.sock') };
 }
 
@@ -86,7 +90,7 @@ export async function ensureResident(config = residentConfig()): Promise<Residen
     const worker = fileURLToPath(new URL(import.meta.url.endsWith('.ts') ? './resident-worker.ts' : './resident-worker.js', import.meta.url));
     const child = spawn(process.execPath, [...import.meta.url.endsWith('.ts') ? ['--import', 'tsx'] : [], worker], {
       cwd: fileURLToPath(new URL('../', import.meta.url)), detached: true, windowsHide: true,
-      env: { ...process.env, TAPNOW_STATE_DIR: config.stateDir }, stdio: ['ignore', log, log],
+      env: { ...process.env, ...config.env, TAPNOW_STATE_DIR: config.stateDir }, stdio: ['ignore', log, log],
     });
     child.once('error', e => { spawnError = e; }); child.unref();
   } finally { closeSync(log); }
@@ -120,10 +124,10 @@ export async function stopResident(config = residentConfig()) {
   } catch (e) { if (!unavailable(e)) throw e; return { running: false, stopped: false }; }
 }
 
-export function createResidentService(): CanvasService {
+export function createResidentService(options: ResidentOptions = {}): CanvasService {
   const service: any = { close: async () => {} };
   for (const method of serviceMethods) service[method] = async (args?: unknown) => {
-    const record = await ensureResident();
+    const record = await ensureResident(residentConfig(options));
     return residentRequest(record, method satisfies ServiceMethod, args ?? {});
   };
   return service as CanvasService;
