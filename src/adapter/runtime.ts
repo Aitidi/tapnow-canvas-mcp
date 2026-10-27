@@ -117,6 +117,19 @@ export function installRuntime(native: any) {
       edges: edges(b), selectedNodeIds: selected, viewport: { x: view[0], y: view[1], zoom: view[2] },
       saveState: saved.get(b.id) === signature(b) ? 'saved' : 'unknown' };
   }
+  /** Reject image parameter values the model's native option lists do not offer. Unlisted keys pass through. */
+  function checkImageParams(params: any) {
+    const spec = native.modelRegistries?.image?.[params?.model];
+    if (!spec?.options) return;
+    const lists: Record<string, any> = { aspectRatio: spec.options.aspectRatios, imageSize: spec.options.imageSizeOptions, quality: spec.options.qualityOptions, thinking_level: spec.options.thinkingLevelOptions, generateMode: spec.options.modes };
+    for (const [key, allowed] of Object.entries(lists)) {
+      // gpt-image models also accept imageSize "auto", which the native panel sets together with aspectRatio "auto".
+      if (Array.isArray(allowed) && params[key] !== undefined && !allowed.includes(params[key]) && !(key === 'imageSize' && params[key] === 'auto' && spec.options.aspectRatios?.includes('auto'))) {
+        failure('INVALID_PARAM', '参数值不在该模型的可选项内。', { model: params.model, key, value: params[key], allowed });
+      }
+    }
+    if (params.times !== undefined && !(Number.isInteger(params.times) && params.times >= 1 && params.times <= 4)) failure('INVALID_PARAM', '生成张数必须为 1–4 的整数。', { model: params.model, key: 'times', value: params.times });
+  }
   function makeNode(b: any, op: any) {
     const data = clean(op.data ?? {});
     if (op.kind === 'audio' && typeof data.prompt === 'string') { data.params = { ...data.params, prompt: data.prompt }; delete data.prompt; }
@@ -131,6 +144,7 @@ export function installRuntime(native: any) {
     if (data.params?.model && !knownModel && op.mode !== 'upload' && !data.src) failure('INVALID_MODEL', '模型不在当前应用能力表内。', { model: data.params.model });
     const n = factory(data, { position: op.position ?? { x: 0, y: 0 }, selected: false, ...(op.width ? { width: op.width } : {}), ...(op.height ? { height: op.height } : {}) });
     if (!n?.id || !n?.type || !n.data || !n.position) failure('UNSUPPORTED_VERSION', '原生节点工厂返回了不匹配的数据。');
+    if (op.kind === 'image' && op.mode === 'generate' && data.params) checkImageParams({ ...data.params, model: n.data.params?.model ?? data.params.model });
     if (!b.props.nodeTypes[n.type]) failure('CAPABILITY_UNAVAILABLE', '当前画布不支持此节点类型。', { type: n.type });
     return n;
   }
@@ -220,11 +234,20 @@ export function installRuntime(native: any) {
               patch.params = { ...fresh.data.params, ...(n.type === 'audio' && n.data.params?.prompt ? { prompt: n.data.params.prompt } : {}), ...patch.params };
               replaceParams = true;
             }
+            if (n.type === 'image' && n.data?.type === 'generate' && op.data?.params) checkImageParams({ ...op.data.params, model: patch.params?.model ?? n.data.params?.model });
             const next = { ...n, ...(op.position ? { position: op.position } : {}), ...(op.width ? { width: op.width } : {}), ...(op.height ? { height: op.height } : {}), data: { ...n.data, ...patch, ...(patch.params ? { params: { ...replaceParams ? {} : n.data?.params, ...patch.params } } : {}) } };
             b = await changes(b, [{ type: 'replace', id, item: next }]);
             const actual = node(b, id);
-            if (JSON.stringify(actual.data) !== JSON.stringify(next.data) || JSON.stringify(actual.position) !== JSON.stringify(next.position)) failure('EDIT_REJECTED', '应用未接受节点修改。');
-            result = { nodeId: id }; break;
+            // The native panel may normalize linked fields (e.g. gpt-image aspectRatio "auto" also sets imageSize "auto");
+            // only the requested fields must stick, and the app's own adjustments are reported back.
+            const requested = clean(op.data ?? {});
+            const same = (a: any, c: any) => JSON.stringify(a) === JSON.stringify(c);
+            const rejected = Object.keys(requested).filter(k => k !== 'params' && !same(actual.data?.[k], next.data[k]))
+              .concat(Object.keys(requested.params ?? {}).filter(k => !same(actual.data?.params?.[k], next.data.params?.[k])).map(k => 'params.' + k));
+            if (rejected.length || !same(actual.position, next.position)) failure('EDIT_REJECTED', '应用未接受节点修改。', { fields: rejected });
+            const adjusted = Object.keys({ ...next.data.params, ...actual.data?.params }).filter(k => !same(actual.data?.params?.[k], next.data.params?.[k]))
+              .map(k => ({ field: 'params.' + k, requested: next.data.params?.[k] ?? null, applied: actual.data?.params?.[k] ?? null }));
+            result = { nodeId: id, ...(adjusted.length ? { adjustedByApp: adjusted } : {}) }; break;
           }
           case 'delete': {
             writable(b, 'deletable');

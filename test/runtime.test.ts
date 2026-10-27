@@ -575,3 +575,20 @@ test('取消分组以显式 undefined 清除 parentId 与 extent，并恢复绝�
   assert.deepEqual(child.position, { x: 110, y: 220 });
   assert.ok(!f.currentNodes().some((n: any) => n.id === 'group'));
 });
+
+test('图片参数按模型原生可选项校验，非法值不写入画布', async () => {
+  const f = fixture({
+    modelDefaults: { image: { 'opt-model': { model: 'opt-model', provider: 'p', options: { aspectRatios: ['auto', '1:1'], imageSizeOptions: ['1K', '2K'], qualityOptions: ['low', 'high'] } } as any } },
+    initialNodes: [{ id: 'img', type: 'image', position: { x: 0, y: 0 }, data: { type: 'generate', params: { model: 'opt-model', provider: 'p', aspectRatio: '1:1', imageSize: '1K', quality: 'low' } } }],
+  });
+  for (const params of [{ aspectRatio: '7:7' }, { imageSize: '8K' }, { quality: 'max' }, { times: 9 }]) {
+    const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'update', nodeId: 'img', data: { params } }] });
+    assert.equal(result.results[0].error.code, 'INVALID_PARAM');
+  }
+  assert.equal(f.currentNodes()[0].data.params.aspectRatio, '1:1');
+  for (const params of [{ aspectRatio: 'auto' }, { imageSize: 'auto' }, { quality: 'high', times: 3 }]) {
+    const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'update', nodeId: 'img', data: { params } }] });
+    assert.equal(result.results[0].ok, true);
+  }
+  assert.deepEqual(f.currentNodes()[0].data.params, { model: 'opt-model', provider: 'p', aspectRatio: 'auto', imageSize: 'auto', quality: 'high', times: 3 });
+});
