@@ -53,7 +53,7 @@ export class TapnowService {
   }
   private async ready() {
     await this.cdp.connect();
-    const moduleSignature = `JSON.stringify([...new Set([...document.scripts].map(s=>s.src).concat([...document.querySelectorAll('link[rel="modulepreload"]')].map(l=>l.href)))].filter(u=>/\\/assets\\/(?:index|UnlimitedModeToggle|course-api-base-url|group|vendor-pkg-canvas|vendor-packages)-[^/]+\\.js$/.test(u)).sort())`;
+    const moduleSignature = `JSON.stringify([...new Set([...document.scripts].map(s=>s.src).concat([...document.querySelectorAll('link[rel="modulepreload"]')].map(l=>l.href)))].filter(u=>/\\/assets\\/(?:index|main|UnlimitedModeToggle|course-api-base-url|group|vendor-pkg-canvas|vendor-packages)-[^/]+\\.js$/.test(u)).sort())`;
     const same = await this.cdp.evaluate(`globalThis.__tapnowCanvasMcp?.fingerprint === ${JSON.stringify(this.runtimeFingerprint)} && globalThis.__tapnowCanvasMcp?.moduleSignature === ${moduleSignature}`);
     if (!same) {
       await collectScopedNative(this.cdp);

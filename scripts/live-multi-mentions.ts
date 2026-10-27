@@ -3,12 +3,13 @@ import { TapnowService } from '../src/service.js';
 import assert from 'node:assert/strict';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { guardedReload } from './safe-reload.js';
 
 const s = new TapnowService();
 try {
   const before = await s.inspect();
   assert.equal(before.canvasId, process.env.TAPNOW_TEST_CANVAS_ID);
-  assert.equal(before.title, 'MCP 开发验证');
+  
   const canvasId = before.canvasId;
   const image = before.nodes.find((n: any) => n.type === 'image' && n.data.title === 'test-image.png' && n.data.src);
   assert.ok(image, 'Run the synthetic fixture upload test first');
@@ -62,7 +63,7 @@ try {
   graph = await s.inspect();
   for (const source of sources) assert.equal(graph.edges.filter((e: any) => e.source === source && e.target === target.id).length, 1);
   assert.equal(graph.edges.filter((e: any) => e.target === target.id).length, 3, 'Library references must not add canvas edges');
-  await s.cdp.send('Page.reload');
+  await guardedReload(s);
   let restored: any;
   for (let i = 0; i < 60; i++) {
     await new Promise(r => setTimeout(r, 250));

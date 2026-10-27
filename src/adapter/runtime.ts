@@ -6,8 +6,10 @@ export function installRuntime(native: any) {
   const pause = (ms = 100) => new Promise(resolve => setTimeout(resolve, ms));
   const clean = (value: any) => JSON.parse(JSON.stringify(value, (key, v) => key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : v));
   const route = () => {
-    const match = /^\/canvas\/([0-9a-f-]{36})\/?$/i.exec(location.pathname);
-    return match?.[1] ?? failure('NO_ACTIVE_CANVAS', '请先在 Tapnow 主窗口打开一个画布。');
+    // Older builds route /canvas/<id>; 0.4.15x desktop routes /p/<project>?c=<canvas>.
+    const legacy = /^\/canvas\/([0-9a-f-]{36})\/?$/i.exec(location.pathname)?.[1];
+    const scoped = /^\/p\/[0-9a-f-]{36}\/?$/i.test(location.pathname) ? new URLSearchParams(location.search).get('c') : null;
+    return legacy ?? (scoped && /^[0-9a-f-]{36}$/i.test(scoped) ? scoped : undefined) ?? failure('NO_ACTIVE_CANVAS', '请先在 Tapnow 主窗口打开一个画布。');
   };
   const guard = (id: string) => {
     const current = route();
@@ -309,7 +311,8 @@ export function installRuntime(native: any) {
             const g = node(b, resolve(op.nodeId));
             if (g.type !== 'group') failure('INVALID_GROUP', '指定节点不是分组。');
             const list = nodes(b).filter((n: any) => n.parentId === g.id);
-            await changes(b, [...list.map((n: any) => { const item = { ...n, position: { x: n.position.x + g.position.x, y: n.position.y + g.position.y } }; delete item.parentId; delete item.extent; return { type: 'replace', id: n.id, item }; }), { type: 'remove', id: g.id }]);
+            await changes(b, [...list.map((n: any) => { // 0.4.15x persists only present keys; explicit undefined clears them like the native ungroup.
+              const item = { ...n, parentId: undefined, extent: n.extent === 'parent' ? undefined : n.extent, position: { x: n.position.x + g.position.x, y: n.position.y + g.position.y } }; return { type: 'replace', id: n.id, item }; }), { type: 'remove', id: g.id }]);
             result = { removedGroupId: g.id, nodeIds: list.map((n: any) => n.id) }; break;
           }
           default: failure('INVALID_OPERATION', '未知画布操作。');
@@ -459,7 +462,9 @@ export function installRuntime(native: any) {
   }
   function generationPanel(b: any, nodeId: string) {
     const candidates = b.all.map((f: any) => f.memoizedProps).filter((p: any) => p?.nodeId === nodeId && typeof p.onGenerate === 'function');
-    const normal = candidates.find((p: any) => typeof p.canGenerate === 'boolean') ?? candidates[0];
+    // 0.4.15x renders several layers per node; the price-bearing action button is the submit control.
+    const normal = candidates.find((p: any) => typeof p.canGenerate === 'boolean' && 'estimatedPrice' in p) ??
+      candidates.find((p: any) => typeof p.canGenerate === 'boolean') ?? candidates[0];
     if (normal) return normal;
     // Audio uses a separate native button inside its node-specific config panel.
     const audioPanels = b.all.filter((f: any) => f.memoizedProps?.nodeId === nodeId && typeof f.memoizedProps.onGenerateReady === 'function' && 'voiceInput' in f.memoizedProps && 'lyrics' in f.memoizedProps);
@@ -479,15 +484,35 @@ export function installRuntime(native: any) {
     guard(args.canvasId); let b = bindings(); writable(b);
     const n = node(b, args.nodeId);
     if (n.type === 'text' && n.data?.type === 'pure' || ['image', 'video', 'audio'].includes(n.type) && n.data?.type === 'upload') failure('NOT_GENERATION_NODE', '上传素材或纯文字节点不能直接生成，请创建生成节点并连接输入。');
+    const backToCanvas = () => typeof document.querySelectorAll !== 'function' ? undefined : Array.from(document.querySelectorAll('button[aria-label]')).find((e: any) => /^(返回画布|back to canvas)$/i.test(e.getAttribute('aria-label'))) as HTMLElement | undefined;
+    if (!generationPanel(b, args.nodeId) && backToCanvas()) {
+      // Another node's detail view covers the canvas; use its native back button.
+      backToCanvas()!.click();
+      for (let i = 0; i < 20 && backToCanvas(); i++) await pause(100);
+      guard(args.canvasId); b = bindings();
+    }
     b = await changes(b, nodes(b).map((n: any) => ({ id: n.id, type: 'select', selected: n.id === args.nodeId })));
     native.selection?.getState?.().setSelectedNodes?.([node(b, args.nodeId)]);
     if (b.viewport) await b.viewport.fitView({ nodes: [{ id: args.nodeId }], duration: 0, padding: 0.4 });
     await pause(250); guard(args.canvasId); b = bindings();
-    const panel = generationPanel(b, args.nodeId);
+    let panel = generationPanel(b, args.nodeId);
+    if (!panel && typeof document.querySelectorAll === 'function' && typeof document.elementFromPoint === 'function') {
+      // 0.4.15x only mounts the generation panel in the node detail view, which opens on a pointer click.
+      const element = Array.from(document.querySelectorAll('.react-flow__node')).find((e: any) => e.getAttribute('data-id') === args.nodeId);
+      const rect = element?.getBoundingClientRect();
+      const x = rect ? rect.left + rect.width / 2 : 0, y = rect ? rect.top + rect.height / 2 : 0;
+      const target = rect && document.elementFromPoint(x, y);
+      if (target && element!.contains(target)) {
+        const init = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: 1, pointerType: 'mouse', isPrimary: true, view: window };
+        target.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1 })); target.dispatchEvent(new MouseEvent('mousedown', { ...init, buttons: 1 }));
+        target.dispatchEvent(new PointerEvent('pointerup', init)); target.dispatchEvent(new MouseEvent('mouseup', init)); target.dispatchEvent(new MouseEvent('click', { ...init, detail: 1 }));
+        for (let i = 0; i < 20 && !panel; i++) { await pause(150); guard(args.canvasId); b = bindings(); panel = generationPanel(b, args.nodeId); }
+      }
+    }
     const task = n.data?.taskInfo;
     return { canvasId: b.id, nodeId: args.nodeId, nodeType: n.type, model: n.data?.params?.model, params: n.data?.params ?? {}, prompt: n.data?.params?.prompt ?? n.data?.prompt ?? n.data?.text ?? '', taskInfo: task ?? null,
       ready: !!panel && panel.canGenerate !== false && !panel.disabled && !panel.priceLoading && !panel.sending && !panel.isGenerating && !['pending', 'running', 'processing'].includes(task?.status),
-      nativeSubmitAvailable: !!panel, estimatedPrice: panel?.estimatedPrice ?? null, estimatedPriceDisplay: typeof panel?.estimatedPriceDisplay === 'string' ? panel.estimatedPriceDisplay : null,
+      nativeSubmitAvailable: !!panel, estimatedPrice: panel?.estimatedPrice ?? null, estimatedPriceDisplay: typeof panel?.estimatedPriceDisplay === 'string' ? panel.estimatedPriceDisplay : typeof panel?.estimatedPriceDisplay?.text === 'string' ? panel.estimatedPriceDisplay.text : null,
       priceLoading: !!panel?.priceLoading,
       reason: !panel ? '当前节点尚未显示可用的生成控制面板。' : panel.priceLoading ? '应用正在计算价格，请稍后再次准备。' : panel.canGenerate === false || panel.disabled ? '应用认为输入条件尚未满足，或当前模型不可用。' : null };
   }

@@ -11,9 +11,11 @@ export async function discoverMentionNative(): Promise<any> {
         if (url.username || url.password || url.search || url.hash) return false;
         const legacy = url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
           /^\/assets\/UnlimitedModeToggle-[^/]+\.js$/.test(url.pathname);
+        const desktop = base.protocol === 'tapnow:' && url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
+          /^\/assets\/(?:vendor-pkg-endpoints|shell-canvas)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
         const web = base.origin === 'https://app.tapnow.ai' && url.origin === 'https://fe-assets.tapnow.media' &&
           /^\/[a-f0-9]{40}\/assets\/(?:vendor-pkg-canvas|vendor-packages)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
-        return legacy || web;
+        return legacy || desktop || web;
       } catch { return false; }
     });
   const source = (value: any): string => {
@@ -28,7 +30,7 @@ export async function discoverMentionNative(): Promise<any> {
   for (const moduleUrl of urls) {
     let module: any;
     try { module = await import(moduleUrl); } catch { continue; }
-    const scoped = base.origin === 'https://app.tapnow.ai' ? (globalThis as any).__tapnowCanvasMcpScopedNative : undefined;
+    const scoped = base.origin === 'https://app.tapnow.ai' || base.protocol === 'tapnow:' ?(globalThis as any).__tapnowCanvasMcpScopedNative : undefined;
     for (const value of [...Object.values(module), ...Array.isArray(scoped) ? scoped : []] as any[]) {
       const src = source(value);
       if (src && /\.nodeType/.test(src) && /\.nodeId/.test(src) && /\.assetId/.test(src) &&

@@ -6,13 +6,14 @@ import { installRuntime } from '../src/adapter/runtime.js';
 const canvasId = 'e1bcdd91-a65f-4710-a3ea-08d98a4da442';
 const otherCanvasId = '00000000-0000-0000-0000-000000000002';
 
-function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean } } = {}) {
+function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean }; projectSearch?: string } = {}) {
   let nodes: any[] = options.initialNodes ?? [], edges: any[] = options.initialEdges ?? [];
   let edits = 0, flushes = 0, factories = 0, uploads = 0, generations = 0;
   let uploadedFile: File | undefined;
   let promptDraft = '', promptChanges = 0, libraryGets = 0;
   const historyCalls: Record<string, number> = { localUndo: 0, localRedo: 0, collabUndo: 0, collabRedo: 0 };
-  const location = { pathname: '/canvas/' + canvasId, href: 'tapnow://app/canvas/' + canvasId };
+  const location: any = options.projectSearch === undefined ? { pathname: '/canvas/' + canvasId, href: 'tapnow://app/canvas/' + canvasId, search: '' }
+    : { pathname: '/p/11111111-2222-3333-4444-555555555555', search: options.projectSearch, href: 'tapnow://app/p/11111111-2222-3333-4444-555555555555' + options.projectSearch };
   const store = { getState: () => ({ nodes, nodeLookup: new Map(nodes.map(n => [n.id, n])), triggerNodeChanges() {}, transform: [0, 0, 1] }), subscribe() {} };
   const flow = { getNodes: () => nodes, getEdges: () => edges, deleteElements: async (args: any) => {
     if (args.nodes) nodes = nodes.filter(n => !args.nodes.some((item: any) => n.id === item.id));
@@ -72,7 +73,7 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
       async get(assetId: string) { libraryGets++; return options.mentions?.libraryItems?.find(item => item.assetId === assetId) ?? null; },
     },
   };
-  const sandbox: any = { location, document, native, console, Map, Set, File, atob, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (value: any) => value };
+  const sandbox: any = { location, document, native, console, Map, Set, File, atob, URLSearchParams, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (value: any) => value };
   if (options.webDockbar) {
     delete native.factories.text;
     delete native.factories.textGenerate;
@@ -548,4 +549,29 @@ test('@素材普通文字不得伪造原生引用token，允许空文本清除�
   assert.equal(result.ok, true);
   assert.equal(f.currentNodes()[0].data.prompt, '');
   assert.equal(f.counters().generations, 0);
+});
+
+test('0.4.15x 项目路由 /p/<项目>?c=<画布> 读取画布 ID，缺少或非法 c 参数时报告无画布', async () => {
+  const f = fixture({ projectSearch: '?c=' + canvasId });
+  const result = await f.dispatch('inspect', {});
+  assert.equal(result.ok, true);
+  assert.equal(result.canvasId, canvasId);
+  for (const search of ['', '?c=not-a-canvas']) {
+    const missing = await fixture({ projectSearch: search }).dispatch('inspect', {});
+    assert.equal(missing.error.code, 'NO_ACTIVE_CANVAS');
+  }
+});
+
+test('取消分组以显式 undefined 清除 parentId 与 extent，并恢复绝对坐标', async () => {
+  const f = fixture({ initialNodes: [
+    { id: 'group', type: 'group', position: { x: 100, y: 200 }, data: { title: 'G' } },
+    { id: 'child', type: 'text', position: { x: 10, y: 20 }, parentId: 'group', extent: 'parent', data: { type: 'pure', text: 'c' } },
+  ] });
+  const result = await f.dispatch('edit', { canvasId, operations: [{ op: 'ungroup', nodeId: 'group' }] });
+  assert.equal(result.results[0].ok, true);
+  const child = f.currentNodes().find((n: any) => n.id === 'child');
+  assert.equal(child.parentId, undefined);
+  assert.equal(child.extent, undefined);
+  assert.deepEqual(child.position, { x: 110, y: 220 });
+  assert.ok(!f.currentNodes().some((n: any) => n.id === 'group'));
 });

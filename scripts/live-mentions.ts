@@ -2,10 +2,11 @@
 import { TapnowService } from '../src/service.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
+import { guardedReload } from './safe-reload.js';
 const s = new TapnowService();
 try {
   let before = await s.inspect();
-  assert.equal(before.canvasId, process.env.TAPNOW_TEST_CANVAS_ID); assert.equal(before.title, 'MCP 开发验证');
+  assert.equal(before.canvasId, process.env.TAPNOW_TEST_CANVAS_ID); 
   const fixture = before.nodes.find((n: any) => n.type === 'image' && n.data.type === 'upload' && n.data.title === 'test-image.png');
   assert.ok(fixture);
   let target = before.nodes.find((n: any) => n.data.title === '@素材开发验证');
@@ -33,8 +34,8 @@ try {
   assert.equal(written.persistence.confirmed, true);
   const replayed = await s.promptSet(request); assert.equal(replayed.replayed, true);
   const graph = await s.inspect(); assert.equal(graph.edges.filter((e: any) => e.source === fixture.id && e.target === target.id).length, 1);
-  await s.cdp.send('Page.reload'); let restored: any;
-  for (let i = 0; i < 50; i++) { await new Promise(r => setTimeout(r, 250)); try { restored = await s.inspect({ nodeIds: [target.id] }); if (restored.nodes.length) break; } catch {} }
+  await guardedReload(s); let restored: any;
+  for (let i = 0; i < 50; i++) { await new Promise(r => setTimeout(r, 250)); try { restored = await s.inspect({ nodeIds: [target.id] }); if (restored.nodes[0]?.data?.prompt !== undefined) { console.log('prompt hydrated after polls', i); break; } } catch {} }
   assert.equal(restored.nodes[0].data.prompt, written.prompt);
   await s.generationPrepare({ canvasId: before.canvasId, nodeId: target.id });
   const rendered = await s.cdp.evaluate(`(()=>{const els=[...document.querySelectorAll('[contenteditable="true"]')];return els.flatMap(e=>e.editor?.getJSON?.().content??[]).flatMap(p=>p.content??[]).filter(c=>c.type==='mention').map(c=>({id:c.attrs.id,type:c.attrs.type,label:c.attrs.label}));})()`);

@@ -8,6 +8,16 @@ export async function discoverNativeModules(): Promise<any> {
   const base = new URL((globalThis as any).location.href);
   const candidates = [...Array.from(doc.scripts, (element: any) => element.src),
     ...Array.from(doc.querySelectorAll('link[rel="modulepreload"]'), (element: any) => element.href)];
+  const sameApp = (url: any) => url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname;
+  // 0.4.15x desktop loads the canvas bundle lazily, so it is only named in the entry's import map.
+  for (const value of Array.from(doc.scripts, (element: any) => element.src)) {
+    try {
+      const url = new URL(value as string, base.href);
+      if (base.protocol !== 'tapnow:' || !sameApp(url) || url.search || url.hash || !/^\/assets\/main-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname)) continue;
+      const text = await (await fetch(url.href)).text();
+      for (const match of new Set(text.match(/\.\/vendor-pkg-canvas-v2-[A-Za-z0-9_-]{8}\.js/g) ?? [])) candidates.push(new URL(match, url.href).href);
+    } catch { /* The legacy and preload candidates still apply. */ }
+  }
   const moduleUrls = [...new Set(candidates.filter((value): value is string => typeof value === 'string' && !!value))]
     .filter(value => {
       try {
@@ -15,11 +25,13 @@ export async function discoverNativeModules(): Promise<any> {
         // Only the currently exposed, known native capability modules. Never
         // import every preloaded UI component: module evaluation can have effects.
         if (url.username || url.password || url.search || url.hash) return false;
-        const legacy = url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
+        const legacy = sameApp(url) &&
           /^\/assets\/(?:index|UnlimitedModeToggle|course-api-base-url|group)-[^/]+\.js$/.test(url.pathname);
+        const desktop = base.protocol === 'tapnow:' && sameApp(url) &&
+          /^\/assets\/(?:vendor-pkg-canvas-v2|vendor-pkg-endpoints|vendor-pkg-tap-models|shell-canvas)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
         const web = base.origin === 'https://app.tapnow.ai' && url.origin === 'https://fe-assets.tapnow.media' &&
           /^\/[a-f0-9]{40}\/assets\/(?:vendor-pkg-canvas|vendor-packages)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
-        return legacy || web;
+        return legacy || desktop || web;
       } catch { return false; }
     });
   const factories: Record<string, any> = {};
@@ -39,7 +51,7 @@ export async function discoverNativeModules(): Promise<any> {
   for (const url of moduleUrls) {
     let module: any;
     try { module = await import(url); } catch { failures.push(url); continue; }
-    const scoped = base.origin === 'https://app.tapnow.ai' ? (globalThis as any).__tapnowCanvasMcpScopedNative : undefined;
+    const scoped = base.origin === 'https://app.tapnow.ai' || base.protocol === 'tapnow:' ?(globalThis as any).__tapnowCanvasMcpScopedNative : undefined;
     for (const value of [...Object.values(module), ...Array.isArray(scoped) ? scoped : []] as any[]) {
       try {
         if (typeof value === 'function') {

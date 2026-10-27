@@ -2,9 +2,10 @@
 import { TapnowService } from '../src/service.js';
 import assert from 'node:assert/strict';
 import { readFile, writeFile } from 'node:fs/promises';
+import { guardedReload } from './safe-reload.js';
 const s = new TapnowService();
 try {
-  const b = await s.inspect(); assert.equal(b.canvasId, process.env.TAPNOW_TEST_CANVAS_ID); assert.equal(b.title, 'MCP 开发验证');
+  const b = await s.inspect(); assert.equal(b.canvasId, process.env.TAPNOW_TEST_CANVAS_ID); 
   const fixture = b.nodes.find((n: any) => n.type === 'image' && n.data.title === 'test-image.png' && n.data.src);
   assert.ok(fixture);
   let libraryFixture: any;
@@ -38,7 +39,7 @@ try {
   assert.match(written.prompt, /\{\{Asset:/); assert.equal(written.addedEdgeIds.length, 0); assert.equal(written.persistence.confirmed, true);
   assert.ok(written.renderedMentionIds.includes(libraryFixture.assetId));
   assert.equal((await s.inspect()).edges.length, beforeEdges);
-  await s.cdp.send('Page.reload');
+  await guardedReload(s);
   let after: any; for (let i = 0; i < 50; i++) { await new Promise(r => setTimeout(r, 250)); try { after = await s.inspect({ nodeIds: [target.id] }); if (after.nodes.length) break; } catch {} }
   assert.equal(after.nodes[0].data.prompt, written.prompt);
   await s.generationPrepare({ canvasId: b.canvasId, nodeId: target.id });

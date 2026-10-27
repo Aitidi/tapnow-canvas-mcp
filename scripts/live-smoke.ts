@@ -3,6 +3,7 @@ import { TapnowService } from '../src/service.js';
 import { writeFile, mkdir } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
+import { safeReload } from './safe-reload.js';
 
 const expected = process.env.TAPNOW_TEST_CANVAS_ID;
 if (!expected) throw new Error('Set TAPNOW_TEST_CANVAS_ID to a dedicated empty test canvas.');
@@ -49,9 +50,7 @@ try {
   const saved = await service.save({ canvasId: expected }); assert.equal(saved.persistence.confirmed, true);
   const state = await service.inspect();
   const persistenceSignature = (s: any) => JSON.stringify(s.nodes.map((n: any) => ({ id: n.id, type: n.type, title: n.data?.title, position: n.position, parentId: n.parentId })).sort((a: any, b: any) => a.id.localeCompare(b.id)));
-  await service.cdp.send('Page.reload');
-  let reloaded: any;
-  for (let i = 0; i < 40; i++) { await new Promise(r => setTimeout(r, 300)); try { reloaded = await service.inspect(); if (reloaded.nodes.length === state.nodes.length) break; } catch {} }
+  const reloaded = await safeReload(service, expected, state.nodes.length);
   assert.equal(persistenceSignature(reloaded), persistenceSignature(state), 'Reloaded data must match saved data');
   report.steps.push({ name: 'reload-persistence', nodeCount: reloaded.nodes.length, edgeCount: reloaded.edges.length });
   await service.view({ canvasId: expected, action: 'fit' });

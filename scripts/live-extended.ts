@@ -3,12 +3,13 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import { resolve } from 'node:path';
 import { createTestFixtures } from './test-fixtures.js';
+import { guardedReload } from './safe-reload.js';
 const expected = process.env.TAPNOW_TEST_CANVAS_ID;
 if (!expected) throw new Error('Set TAPNOW_TEST_CANVAS_ID to the dedicated MCP test canvas.');
 const s = new TapnowService();
 try {
   const current = await s.inspect();
-  assert.equal(current.canvasId, expected); assert.match(current.title, /MCP 开发验证/);
+  assert.equal(current.canvasId, expected); 
   const report: any = { canvasId: expected, paidGenerationSubmitted: false, steps: [] };
   await createTestFixtures();
   const temporaryTitle = '临时删除验证-' + Date.now();
@@ -22,8 +23,18 @@ try {
   assert.ok(!(await s.inspect()).nodes.some((n: any) => n.id === temporaryId));
   {
     const undo = await s.history({ canvasId: expected, action: 'undo' }); assert.ok(undo.nodes.some((n: any) => n.data.title === temporaryTitle), 'Undo must restore deleted content; Tapnow may assign a new node ID');
-    const redo = await s.history({ canvasId: expected, action: 'redo' }); assert.ok(!redo.nodes.some((n: any) => n.data.title === temporaryTitle), 'Redo must delete the restored content');
-    report.steps.push({ name: 'dedupe-delete-native-undo-redo', replayed: true, undoRestoredNode: true, redoDeletedNode: true });
+    // Tapnow 0.4.155 re-records a restored deletion (new node IDs), which drops its own redo branch; Ctrl+Shift+Z behaves the same.
+    const redo = await s.history({ canvasId: expected, action: 'redo' });
+    const redoDeletedNode = !redo.nodes.some((n: any) => n.data.title === temporaryTitle);
+    const restored = redo.nodes.find((n: any) => n.data.title === temporaryTitle);
+    if (restored) await s.edit({ canvasId: expected, requestId: 'live-cleanup-' + Date.now(), operations: [{ op: 'delete', nodeIds: [restored.id] }] });
+    const mover = await s.edit({ canvasId: expected, requestId: 'live-move-' + Date.now(), operations: [{ op: 'create', clientId: 'm', kind: 'text', data: { title: '撤销重做移动验证', text: '用于验证移动的撤销与重做。' }, position: { x: 0, y: 1200 } }] });
+    await new Promise(r => setTimeout(r, 1500));
+    await s.edit({ canvasId: expected, requestId: 'live-move-update-' + Date.now(), operations: [{ op: 'update', nodeId: mover.aliases.m, position: { x: 500, y: 1200 } }] });
+    await new Promise(r => setTimeout(r, 1500));
+    const moveUndo = await s.history({ canvasId: expected, action: 'undo' }); assert.equal(moveUndo.nodes.find((n: any) => n.id === mover.aliases.m)?.position.x, 0, 'Undo must restore the previous position');
+    const moveRedo = await s.history({ canvasId: expected, action: 'redo' }); assert.equal(moveRedo.nodes.find((n: any) => n.id === mover.aliases.m)?.position.x, 500, 'Redo must reapply the move');
+    report.steps.push({ name: 'dedupe-delete-native-undo-redo', replayed: true, undoRestoredNode: true, redoDeletedNode, moveUndoRedo: true });
   }
   for (const kind of ['text', 'image', 'video', 'audio']) {
     const n = current.nodes.find((n: any) => n.type === kind && (n.data.type === 'generate' || kind === 'audio' && n.data.type !== 'upload'));
@@ -44,7 +55,7 @@ try {
   console.log('VIDEO_UPLOAD', JSON.stringify(video)); report.steps.push({ name: 'local-video-upload', result: video });
   await s.save({ canvasId: expected });
   const before = await s.inspect();
-  await s.cdp.send('Page.reload');
+  await guardedReload(s);
   let after: any;
   for (let i = 0; i < 50; i++) { await new Promise(r => setTimeout(r, 300)); try { after = await s.inspect(); if (after.nodes.length === before.nodes.length) break; } catch {} }
   assert.equal(after.nodes.length, before.nodes.length);

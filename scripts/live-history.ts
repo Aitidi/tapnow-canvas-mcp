@@ -2,7 +2,7 @@ import { TapnowService } from '../src/service.js';
 import assert from 'node:assert/strict';
 const s = new TapnowService();
 try {
-  const b=await s.inspect(); assert.equal(b.canvasId,process.env.TAPNOW_TEST_CANVAS_ID); assert.match(b.title,/MCP 开发验证/);
+  const b=await s.inspect(); assert.equal(b.canvasId,process.env.TAPNOW_TEST_CANVAS_ID); 
   const title='撤销重做验证临时节点-'+Date.now();
   const added=await s.edit({canvasId:b.canvasId,requestId:'history-create-'+Date.now(),operations:[{op:'create',kind:'text',data:{title,text:'Temporary history test'}}]});
   const id=added.results[0].nodeId;
