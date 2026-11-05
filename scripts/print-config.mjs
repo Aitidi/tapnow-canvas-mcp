@@ -23,7 +23,7 @@ if (process.argv.includes('--both')) {
   env.TAPNOW_DESKTOP_CDP_URL = new CdpConnection(process.env.TAPNOW_DESKTOP_CDP_URL ?? 'http://127.0.0.1:9333', { mode: 'desktop' }).endpoint;
   env.TAPNOW_WEB_CDP_URL = new CdpConnection(process.env.TAPNOW_WEB_CDP_URL ?? 'chrome', { mode: 'web' }).endpoint;
 } else env.TAPNOW_CDP_URL = new CdpConnection().endpoint;
-for (const name of ['TAPNOW_TARGET','TAPNOW_TARGET_ID', 'TAPNOW_CHROME_USER_DATA_DIR', 'TAPNOW_STATE_DIR', 'TAPNOW_RESIDENT']) {
+for (const name of ['TAPNOW_TARGET','TAPNOW_TARGET_ID', 'TAPNOW_CHROME_USER_DATA_DIR', 'TAPNOW_STATE_DIR', 'TAPNOW_RESIDENT', 'TAPNOW_SAVE_POLICY']) {
   if (process.env[name]) env[name] = process.env[name];
 }
 const entry = { command: process.execPath, args: [server], env };

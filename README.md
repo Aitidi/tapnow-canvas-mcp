@@ -273,6 +273,7 @@ npm run resident:stop     # 等在途操作结束后断开
 | `TAPNOW_TARGET_ID` | 不设置 | 打开多个网页画布时指定调试目标 ID（不是画布 UUID）；双端模式下只作用于网页端 |
 | `TAPNOW_CHROME_USER_DATA_DIR` | 系统默认 Chrome 用户数据目录 | 地址为 `chrome` 时，从这里读取 `DevToolsActivePort` 发现调试端口 |
 | `TAPNOW_STATE_DIR` | 项目下的 `.tapnow-mcp/` | 请求账本、跨客户端写入锁和常驻服务记录的位置 |
+| `TAPNOW_SAVE_POLICY` | `disabled` | 本地版本默认跳过编辑后的保存请求及显式保存，返回 `persistence.status=skipped`；应用自身的自动保存不受影响，也不声明内容已持久化。如需恢复原生保存可显式设置 `native` |
 
 `chrome` 表示自动读取 Chrome 的 `DevToolsActivePort` 文件找到调试地址，只用于发现端口，不读取任何凭据。也可以直接填本机浏览器 WebSocket 地址 `ws://127.0.0.1:端口/devtools/browser/ID`，或另行开启的本机 HTTP CDP 地址。
 

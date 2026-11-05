@@ -56,6 +56,22 @@ export async function discoverNativeModules(): Promise<any> {
       try {
         if (typeof value === 'function') {
           const src = source(value);
+          // 0.4.20x exports the uploader class instead of its singleton. Delay
+          // construction until an actual import, so discovery stays read-only.
+          const prototype = value.prototype;
+          if (prototype && hasOwnMethod(prototype, 'upload') && hasOwnMethod(prototype, 'validateFile') &&
+            hasOwnMethod(prototype, 'legacyUpload') && /this\.validateFile/.test(source(prototype.upload)) &&
+            /this\.legacyUpload/.test(source(prototype.upload)) && /this\.gcsUploader/.test(src)) {
+            let manager: any;
+            upload ??= async (file: any) => {
+              manager ??= new value();
+              const result = await manager.upload(file);
+              if (result?.success !== true || !result.fileInfo || typeof result.fileInfo.url !== 'string' || !result.fileInfo.url) {
+                throw Object.assign(new Error(result?.error || 'Tapnow 原生上传未返回有效素材地址。'), { code: 'UPLOAD_FAILED' });
+              }
+              return result.fileInfo;
+            };
+          }
           // Workflow groups use an implicit object return and a direct position
           // argument instead of the regular node constructor's options object.
           if (/=>\s*\(\{id:/.test(src) && /type:[\w$]+\.GROUP,/.test(src) &&

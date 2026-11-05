@@ -1,8 +1,8 @@
 /** Serialized into the renderer. Discovery reads exports, never calls the backend. */
-export async function discoverMentionNative(): Promise<any> {
+export async function discoverMentionNative(nativeModuleUrls: string[] = []): Promise<any> {
   const doc = (globalThis as any).document;
   const base = new URL((globalThis as any).location.href);
-  const candidates = [...Array.from(doc.scripts, (element: any) => element.src),
+  const candidates = [...nativeModuleUrls, ...Array.from(doc.scripts, (element: any) => element.src),
     ...Array.from(doc.querySelectorAll('link[rel="modulepreload"]'), (element: any) => element.href)];
   const urls = [...new Set(candidates.filter((value): value is string => typeof value === 'string' && !!value))]
     .filter(value => {
@@ -12,7 +12,7 @@ export async function discoverMentionNative(): Promise<any> {
         const legacy = url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
           /^\/assets\/UnlimitedModeToggle-[^/]+\.js$/.test(url.pathname);
         const desktop = base.protocol === 'tapnow:' && url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
-          /^\/assets\/(?:vendor-pkg-endpoints|shell-canvas)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
+          /^\/assets\/(?:vendor-pkg-endpoints|shell-canvas|vendor-pkg-canvas-v2)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
         const web = base.origin === 'https://app.tapnow.ai' && url.origin === 'https://fe-assets.tapnow.media' &&
           /^\/[a-f0-9]{40}\/assets\/(?:vendor-pkg-canvas|vendor-packages)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
         return legacy || desktop || web;

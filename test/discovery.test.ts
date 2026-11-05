@@ -3,6 +3,26 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { discoverNativeModules } from '../src/adapter/discovery.js';
 
+test('新版上传器类在发现时不实例化，实际上传时复用原生实例并检查返回值', async () => {
+  let constructions = 0, uploads = 0;
+  class UploadManager {
+    gcsUploader: any;
+    constructor() { constructions++; this.gcsUploader = {}; }
+    validateFile() {}
+    legacyUpload() {}
+    async upload(file: any) { this.validateFile(); if (file.fail) return { success: false, error: 'native failure' }; if (file.fallback) this.legacyUpload(); uploads++; return { success: true, fileInfo: { url: 'https://assets.example/test.png' } }; }
+  }
+  const sandbox = { URL, __name: (value: any) => value, location: {href:'tapnow://app/canvas/test'},
+    document: {scripts:[{src:'tapnow://app/assets/vendor-pkg-endpoints-AAAAAAAA.js'}],querySelectorAll:()=>[]},
+    load: async () => ({UploadManager}) };
+  const native = await runInNewContext(`(${discoverNativeModules.toString().replace('await import(url)', 'await load(url)')})()`, sandbox);
+  assert.equal(constructions, 0);
+  assert.equal((await native.upload({})).url, 'https://assets.example/test.png');
+  await native.upload({});
+  assert.equal(constructions, 1); assert.equal(uploads, 2);
+  await assert.rejects(native.upload({fail:true}), (e:any)=>e.code==='UPLOAD_FAILED');
+});
+
 test('网页原生发现仅加载已暴露的官方 CDN 能力包，排除跟踪脚本、相似域名和未知包', async () => {
   const base = 'https://fe-assets.tapnow.media/' + 'a'.repeat(40) + '/assets/';
   const allowed = [base + 'vendor-pkg-canvas-test1234.js', base + 'vendor-packages-test1234.js'];

@@ -96,6 +96,10 @@ export function installRuntime(native: any) {
   }
   async function flush(id: string) {
     guard(id);
+    if (native.savePolicy === 'disabled') {
+      saved.delete(id);
+      return { status: 'skipped', confirmed: false, reason: 'disabled' };
+    }
     await pause();
     guard(id);
     if (typeof native.flush !== 'function') return { status: 'unknown', confirmed: false };
@@ -619,7 +623,7 @@ export function installRuntime(native: any) {
           let canvas: any;
           try { const b = bindings(); canvas = { canvasId: b.id, nodeCount: nodes(b).length, edgeCount: edges(b).length, editingAvailable: b.props.nodesDraggable !== false, viewportAvailable: !!b.viewport }; }
           catch (e: any) { canvas = { error: { code: e.code, message: e.message } }; }
-          result = { url: location.href, title: document.title, desktop: w.tapDesktop?.isDesktop === true, adapterVersion: 1, modules: native.moduleUrls, factories: supportedKinds(), creationMethods: Object.fromEntries(['text', 'audio'].map(kind => [kind, native.factories[kind] ? 'native-factory' : webNodeCreationAvailable() ? 'native-dockbar' : 'unavailable'])), nativeSaveAvailable: typeof native.flush === 'function', nativeUploadAvailable: typeof native.upload === 'function', nativeMentionsAvailable: !!native.mentions?.parseAsset, nativeLibraryAvailable: !!native.mentions?.library?.list, ...(native.mentionError ? { mentionError: native.mentionError } : {}), canvas }; break;
+          result = { url: location.href, title: document.title, desktop: w.tapDesktop?.isDesktop === true, adapterVersion: 1, modules: native.moduleUrls, factories: supportedKinds(), creationMethods: Object.fromEntries(['text', 'audio'].map(kind => [kind, native.factories[kind] ? 'native-factory' : webNodeCreationAvailable() ? 'native-dockbar' : 'unavailable'])), savePolicy: native.savePolicy ?? 'native', nativeSaveAvailable: native.savePolicy !== 'disabled' && typeof native.flush === 'function', nativeUploadAvailable: typeof native.upload === 'function', nativeMentionsAvailable: !!native.mentions?.parseAsset, nativeLibraryAvailable: !!native.mentions?.library?.list, ...(native.mentionError ? { mentionError: native.mentionError } : {}), canvas }; break;
         }
         case 'inspect': result = snapshot(bindings(), args); break;
         case 'edit': result = await runEdit(args); break;

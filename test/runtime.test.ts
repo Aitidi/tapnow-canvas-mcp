@@ -6,7 +6,7 @@ import { installRuntime } from '../src/adapter/runtime.js';
 const canvasId = 'e1bcdd91-a65f-4710-a3ea-08d98a4da442';
 const otherCanvasId = '00000000-0000-0000-0000-000000000002';
 
-function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean }; projectSearch?: string } = {}) {
+function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; savePolicy?: string; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean }; projectSearch?: string } = {}) {
   let nodes: any[] = options.initialNodes ?? [], edges: any[] = options.initialEdges ?? [];
   let edits = 0, flushes = 0, factories = 0, uploads = 0, generations = 0;
   let uploadedFile: File | undefined;
@@ -57,6 +57,7 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
     return { id: 'native-' + factories, type: kind, position: { x: 0, y: 0 }, data: initialized, ...config };
   };
   const native: any = {
+    savePolicy: options.savePolicy,
     factories: { text: make('text'), textGenerate: make('text'), image: make('image'), imageUpload: make('image'), videoUpload: make('video'), audio: make('audio'), group: make('group') },
     modelRegistries: { image: options.modelDefaults?.image ?? {}, audio: [{ model: 'audio-model', provider: 'native' }, ...Object.keys(options.modelDefaults?.audio ?? {}).map(model => ({ model, provider: 'native' }))] },
     flush: async () => { flushes++; if (options.mutateDuringFlush && nodes.length) nodes = nodes.map(n => ({ ...n, data: { ...n.data, text: 'latest-after-save' } })); return options.flushResult ?? 'saved'; },
@@ -591,4 +592,17 @@ test('图片参数按模型原生可选项校验，非法值不写入画布', as
     assert.equal(result.results[0].ok, true);
   }
   assert.deepEqual(f.currentNodes()[0].data.params, { model: 'opt-model', provider: 'p', aspectRatio: 'auto', imageSize: 'auto', quality: 'high', times: 3 });
+});
+
+
+test('禁用保存策略时编辑、提示词与显式保存均不请求原生保存，也不宣称已持久化', async () => {
+  const f = fixture({savePolicy:'disabled'});
+  const created = await f.dispatch('edit', {canvasId,requestId:'save-policy-create',operations:[{op:'create',kind:'text',data:{text:'temporary'}}]});
+  assert.equal(created.results[0].ok,true);
+  assert.equal(created.persistence.status,'skipped');
+  const saved = await f.dispatch('save',{canvasId});
+  assert.equal(saved.persistence.confirmed,false);
+  assert.equal(saved.persistence.reason,'disabled');
+  assert.equal(f.counters().flushes,0);
+  assert.equal((await f.dispatch('inspect')).saveState,'unknown');
 });

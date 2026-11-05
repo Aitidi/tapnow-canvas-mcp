@@ -1,6 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { collectScopedNative, isScopedNativeFunction } from '../src/adapter/scoped-native.js';
+import { runInNewContext } from 'node:vm';
+
+test('新版模块首项为重导出包装器时优先选择已识别的本模块函数作为作用域锚点', async () => {
+  const nativeText = (data:any={}) => { const type={PURE:'pure'}; return {id:'text-id',position:{x:0,y:0},data:{title:'Text',type:type.PURE,...data}}; };
+  const wrapper = ()=>null;
+  const cdp:any={evaluate:async()=>{},send:async(method:string,args:any)=>{
+    if(method==='Runtime.evaluate') {
+      const expression=args.expression.replace('await import(new URL(names[0],entry).href)','await load(new URL(names[0],entry).href)');
+      const result=await runInNewContext(expression,{URL,location:{protocol:'tapnow:',host:'app'},document:{scripts:[{src:'tapnow://app/assets/main-AAAAAAAA.js'}]},fetch:async()=>({text:async()=> 'import("./vendor-pkg-canvas-v2-BBBBBBBB.js")'}),load:async()=>({first:wrapper,nativeText})});
+      assert.equal(result,nativeText);
+    }
+    return {result:{}};
+  }};
+  await collectScopedNative(cdp);
+});
 
 const parser = 'function parse(e){const a=e.assetId,n=e.nodeId,t=e.nodeType;if(!a)return null;return{nodeName:e.nodeName,mediaSrc:e.mediaSrc,nodeId:n,nodeType:t}}';
 

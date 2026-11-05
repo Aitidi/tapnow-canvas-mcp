@@ -36,9 +36,14 @@ export class TapnowService {
   readonly journal: RequestJournal;
   private tail: Promise<unknown> = Promise.resolve();
   private closed = false;
-  private readonly runtimeFingerprint = digest([discoverNativeModules.toString(), discoverMentionNative.toString(), installRuntime.toString(), collectScopedNative.toString(), isScopedNativeFunction.toString()]);
+  private readonly savePolicy: 'native' | 'disabled';
+  private readonly runtimeFingerprint: string;
 
-  constructor(options: { endpoint?: string; stateDir?: string; mode?: 'desktop' | 'web'; targetId?: string } = {}) {
+  constructor(options: { endpoint?: string; stateDir?: string; mode?: 'desktop' | 'web'; targetId?: string; savePolicy?: 'native' | 'disabled' } = {}) {
+    const savePolicy = options.savePolicy ?? process.env.TAPNOW_SAVE_POLICY ?? 'disabled';
+    if (!['native', 'disabled'].includes(savePolicy)) throw new TapnowError('INVALID_ARGUMENT', 'TAPNOW_SAVE_POLICY 必须为 native 或 disabled。');
+    this.savePolicy = savePolicy as 'native' | 'disabled';
+    this.runtimeFingerprint = digest([discoverNativeModules.toString(), discoverMentionNative.toString(), installRuntime.toString(), collectScopedNative.toString(), isScopedNativeFunction.toString(), this.savePolicy]);
     this.cdp = new CdpConnection(options.endpoint, options);
     this.stateDir = options.stateDir ?? process.env.TAPNOW_STATE_DIR ?? fileURLToPath(new URL('../.tapnow-mcp/', import.meta.url));
     this.journal = new RequestJournal(join(this.stateDir, 'requests'), this.cdp.endpoint);
@@ -58,7 +63,7 @@ export class TapnowService {
     if (!same) {
       await collectScopedNative(this.cdp);
       try {
-        await this.cdp.evaluate(`(async()=>{ const __name=(value)=>value; const native=await (${discoverNativeModules.toString()})(); try { native.mentions=await (${discoverMentionNative.toString()})(); } catch(e) { native.mentionError={code:e.code??'UNSUPPORTED_VERSION',message:e.message}; } delete globalThis.__tapnowCanvasMcp; (${installRuntime.toString()})(native); globalThis.__tapnowCanvasMcp.fingerprint=${JSON.stringify(this.runtimeFingerprint)}; globalThis.__tapnowCanvasMcp.moduleSignature=${moduleSignature}; return true; })()`);
+        await this.cdp.evaluate(`(async()=>{ const __name=(value)=>value; const native=await (${discoverNativeModules.toString()})(); native.savePolicy=${JSON.stringify(this.savePolicy)}; try { native.mentions=await (${discoverMentionNative.toString()})(native.moduleUrls); } catch(e) { native.mentionError={code:e.code??'UNSUPPORTED_VERSION',message:e.message}; } delete globalThis.__tapnowCanvasMcp; (${installRuntime.toString()})(native); globalThis.__tapnowCanvasMcp.fingerprint=${JSON.stringify(this.runtimeFingerprint)}; globalThis.__tapnowCanvasMcp.moduleSignature=${moduleSignature}; return true; })()`);
       } finally { await this.cdp.evaluate('delete globalThis.__tapnowCanvasMcpScopedNative').catch(() => {}); }
     }
   }
