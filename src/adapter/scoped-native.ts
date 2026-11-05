@@ -9,7 +9,10 @@ export function isScopedNativeFunction(source: string) {
   const expand = /allowedNodeTypes/.test(source) && /allowLegacyNodePayload/.test(source) && /\.indexOf\(["']\{\{Asset:/.test(source) && /images:/.test(source) && /videos:/.test(source) && /audios:/.test(source);
   const normalize = /\.asset_type/.test(source) && /\.compliance_status/.test(source) && /\.\.\.[\w$]+,asset_type:/.test(source) && /compliance_status:/.test(source) && !/metadata|\.asset\b/.test(source);
   const text = /typeof [\w$]+\.content={2,3}["']string["']/.test(source) && /\.metadata/.test(source) && /\.fields/.test(source) && /\.source_url/.test(source) && /\.thumbnail_url/.test(source) && /\.name/.test(source);
-  return factory || parser || tokens || expand || normalize || text;
+  const history = /rawGenerationParams:/.test(source) && /sourceFileIds:/.test(source) && /\.resources\.map\(/.test(source) && /createdAt:/.test(source);
+  const elementFormat = /\{id:[\w$]+\.element_id,label:[\w$]+\.alias\}/.test(source);
+  const elementParse = /element_id:[\w$]+\.id,alias:[\w$]+\.label/.test(source) && /:null/.test(source);
+  return factory || parser || tokens || expand || normalize || text || history || elementFormat || elementParse;
 }
 
 /**

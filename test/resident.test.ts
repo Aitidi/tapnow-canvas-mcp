@@ -69,7 +69,7 @@ test('独立 stdio MCP 客户端先后退出后仍复用同一后台服务', asy
     const transport = new StdioClientTransport({ command: process.execPath, args: ['--import', 'tsx', fileURLToPath(new URL('../src/server.ts', import.meta.url))], env, stderr: 'pipe' });
     const client = new Client({ name: 'resident-test-' + i, version: '1' });
     try {
-      await client.connect(transport); assert.equal((await client.listTools()).tools.length, 14);
+      await client.connect(transport); assert.equal((await client.listTools()).tools.length, 22);
       const result = await client.callTool({ name: 'tapnow_canvas_read', arguments: {} });
       assert.equal(result.structuredContent?.canvasId, 'same-canvas');
     } finally { await client.close(); await transport.close(); }

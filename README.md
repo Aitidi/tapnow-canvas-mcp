@@ -4,7 +4,7 @@
 
 这是一个本地 stdio MCP 服务：通过 Chrome DevTools Protocol（CDP）连接本机的 Tapnow Desktop（Electron）或 Chrome，复用当前登录状态，调用应用自身的编辑、上传、生成与保存入口。它不修改应用安装文件，不读取登录凭据，也不向 agent 开放任意脚本执行。
 
-> 当前版本 0.2.0。在 Windows、Tapnow Desktop 0.4.112、Chrome 网页端、Node.js 24 上实测；构建和 104 项自动化测试通过。Tapnow 更新可能影响兼容性，其他操作系统尚未实测。
+> 当前版本 0.2.0。在 Windows、Tapnow Desktop 0.4.214、Node.js 24 上验证新增能力；原有双端模式保留，新增能力尚未逐项实测网页端。构建和 140 项自动化测试通过。Tapnow 更新可能影响兼容性，其他操作系统尚未实测。
 
 ## 能做什么
 
@@ -150,7 +150,7 @@ npm run diagnose:both
 
 ## 工具列表
 
-共 14 个工具。双端模式下，每个工具都接受 `target` 参数。
+共 22 个工具。双端模式下，每个工具都接受 `target` 参数。
 
 | 工具 | 用途 |
 | --- | --- |
@@ -165,9 +165,29 @@ npm run diagnose:both
 | `tapnow_generation_prepare` | 打开原生生成面板检查就绪情况，不提交任务 |
 | `tapnow_generation_submit` | 实际提交生成任务，**会消耗 Tapies** |
 | `tapnow_generation_status` | 查询任务状态、错误与结果 |
+| `tapnow_generation_history` | 只读查询节点的原生历史批次、资源及参数，不切换版本 |
+| `tapnow_asset_download` | 批量下载节点的当前文字或 Tapnow 托管媒体到本地，逐项报告且不覆盖文件 |
+| `tapnow_library` | 列出/创建文件夹、重命名/移动素材、将已有画布成果归档；不提供删除动作 |
+| `tapnow_history_restore` | 从原生历史选择结果恢复到节点，或复制为新节点对比 |
+| `tapnow_image_tools` | 裁剪、改尺寸、分割；原生放大、抠图、多角度与打光 |
+| `tapnow_canvas_manage` | 列出、创建、打开画布，跨画布复制节点和内部连线 |
+| `tapnow_elements` | 查询个人/团队 Element 及其成员，用于角色和产品引用 |
+| `tapnow_generation_control` | 进度、原生取消、失败重试，以及持久化串行队列 |
 | `tapnow_history` | 撤销或重做 |
 | `tapnow_canvas_save` | 请求保存并核对保存确认 |
 | `tapnow_canvas_screenshot` | 截取当前页面，包含画布与界面 |
+
+### 新增能力的使用方式
+
+- **恢复结果**：先用 `tapnow_generation_history` 查询，再将 `historyId` 与 `resourceId` 或 `resourceIndex` 交给 `tapnow_history_restore`。`mode=replace` 更新原节点，`mode=copy` 新建素材节点。默认恢复原生归一化后的提示词和参数；`restoreParameters=false` 保留当前参数。范围为最近 100 条历史，未找到时不会覆盖当前结果。
+- **图片处理**：`tapnow_image_tools` 使用 `phase=prepare` 检查，`phase=execute` 执行。`crop` 需要像素 `rect`，`resize` 需要 `width/height`，`split` 使用 `rows/cols`（2–8）。这些操作创建新 PNG 并上传，不消耗生成积分，但会使用素材存储。源图和输出上限 64MP，单边输出最多 8192 像素。源图片文件最多 50 MiB，校验格式与实际流大小后从本地 Blob 解码，避免远程图片缓存造成解码卡住。
+- **原生图片工具**：`multi_angle` 的 `settings` 支持 `rotation`（−90–90°）、`tilt`（−1–1）、`zoom`（0–10）和 `wideAngleLens`；`relight` 支持 `azimuth/elevation`、`brightness/temperature`、`rimEnabled`。亮度和色温须使用应用提供的档位。`upscale` 支持 `scale`（2/4/6）和原生 `style`，准备时新建放大节点，后续使用返回的 `nodeId`。准备会返回实际参数、价格与就绪情况；生成执行及抠图需要明确授权并传 `allowPaid=true`。抠图当前无法可靠预读费用，返回未知费用。打光 `output=preview` 走应用免费的本地导出按钮；预览资源或按钮未就绪时会拒绝执行。
+- **跨画布**：`tapnow_canvas_manage` 的 `list` 支持 `offset/limit`；`create` 创建私有画布；`open/copy_nodes` 使用查询或创建返回的 `destinationCanvasId`。切换前必须确认源画布保存。复制支持文字、图片、视频、音频、分组及后代（最多 100 节点），重建内部连线与组内坐标，完成后停留在目标画布。生成中的节点不可复制；不复制任务或历史记录。列表范围取决于当前账号的原生接口。
+- **Element 引用**：`tapnow_elements` 可按 `space=personal/team`、`query`、`page/limit` 查询，或 `action=get` 查询单个 `elementId`。将 ID 作为 `tapnow_prompt_set` 的 `{type:"reference",source:"element",elementId:"…"}` 段传入，不手写 token。
+- **任务控制**：`tapnow_generation_control` 的 `list/progress` 返回节点真实 `taskInfo`；只有应用提供进度时才有百分比。`cancel` 只调用该节点唯一的原生活动 `stop`，入口缺失时返回不可用，不会修改状态冒充取消。`retry_prepare` 准备失败/停止任务，`retry` 经 `allowPaid` 授权后提交。
+- **队列**：`enqueue` 用 `nodeIds` 建立持久化队列，不生成。`queue_status` 查看；`queue_advance` 带 `queueId`、新的 `requestId` 和 `allowPaid=true` 最多提交下一项；上项真实任务结束后才推进。`queue_cancel` 带 `jobId` 取消未提交项或请求原生取消。入队后修改参数需要新建队列。提交结果未知时停止推进，不盲目重试。队列没有后台自动提交循环。
+
+新增付费路径仅验证参数、价格和授权拦截，没有为测试实际提交付费生成。历史恢复、任务取消/完成/重试的边界用模拟原生接口回归；桌面空白测试画布没有可恢复的历史或正在运行的任务，实际效果仍依赖该任务的原生入口。
 
 ## 使用约定
 
@@ -211,6 +231,7 @@ npm run diagnose:both
 | --- | --- | --- | --- |
 | 当前画布 | `source: "canvas"` | `nodeId` | 自动补齐素材到目标节点的连线 |
 | 素材库 | `source: "library"` | `assetId` | 写入原生素材 token，不新增画布连线 |
+| Element | 使用 `tapnow_elements` 查询 | `elementId` | `source: "element"` 写入原生元素引用，区分于单素材 |
 
 查询支持 `query`、`limit`、`offset`（默认每页 50 条，最多 100 条），用返回的 `nextOffset` 翻页。提供目标节点 `nodeId` 时，画布候选还会返回 `connected` 和 `canConnect`。素材库按个人、团队顺序分页，暂不支持旧版模板包。
 
@@ -273,7 +294,7 @@ npm run resident:stop     # 等在途操作结束后断开
 | `TAPNOW_TARGET_ID` | 不设置 | 打开多个网页画布时指定调试目标 ID（不是画布 UUID）；双端模式下只作用于网页端 |
 | `TAPNOW_CHROME_USER_DATA_DIR` | 系统默认 Chrome 用户数据目录 | 地址为 `chrome` 时，从这里读取 `DevToolsActivePort` 发现调试端口 |
 | `TAPNOW_STATE_DIR` | 项目下的 `.tapnow-mcp/` | 请求账本、跨客户端写入锁和常驻服务记录的位置 |
-| `TAPNOW_SAVE_POLICY` | `disabled` | 本地版本默认跳过编辑后的保存请求及显式保存，返回 `persistence.status=skipped`；应用自身的自动保存不受影响，也不声明内容已持久化。如需恢复原生保存可显式设置 `native` |
+| `TAPNOW_SAVE_POLICY` | `native` | 使用当前画布实际注册的原生队列保存并核对确认；设为 `disabled` 可跳过适配器保存，返回 `persistence.status=skipped`。应用自身的自动保存不受影响 |
 
 `chrome` 表示自动读取 Chrome 的 `DevToolsActivePort` 文件找到调试地址，只用于发现端口，不读取任何凭据。也可以直接填本机浏览器 WebSocket 地址 `ws://127.0.0.1:端口/devtools/browser/ID`，或另行开启的本机 HTTP CDP 地址。
 
@@ -285,7 +306,7 @@ npm run resident:stop     # 等在途操作结束后断开
 
 | 项目 | 结果 |
 | --- | --- |
-| MCP 接入 | 14 个工具通过正式 stdio 客户端调用 |
+| MCP 接入 | 17 个工具通过正式 stdio 客户端握手与 schema 校验，新增历史查询、批量下载和素材库管理另有桌面端实测 |
 | 双端模式 | APP 端（9333）与 Chrome 网页端同时连接，按 `target` 路由 |
 | APP 端生成 | Seedance 2.0 全能参考，3 张参考图，10 秒 720p，任务完成并回填 |
 | 网页端生成 | Seedance 2.5 全能参考，1 张 `@素材` 图片，5 秒 720p；输出 MP4 实测 5.042 秒、1280×720 |

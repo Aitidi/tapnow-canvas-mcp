@@ -6,11 +6,12 @@ import { installRuntime } from '../src/adapter/runtime.js';
 const canvasId = 'e1bcdd91-a65f-4710-a3ea-08d98a4da442';
 const otherCanvasId = '00000000-0000-0000-0000-000000000002';
 
-function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; savePolicy?: string; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean }; projectSearch?: string } = {}) {
+function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; savePolicy?: string; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean; elementData?: any }; projectSearch?: string } = {}) {
   let nodes: any[] = options.initialNodes ?? [], edges: any[] = options.initialEdges ?? [];
   let edits = 0, flushes = 0, factories = 0, uploads = 0, generations = 0;
   let uploadedFile: File | undefined;
   let promptDraft = '', promptChanges = 0, libraryGets = 0;
+  const managementCalls:any[] = [];
   const historyCalls: Record<string, number> = { localUndo: 0, localRedo: 0, collabUndo: 0, collabRedo: 0 };
   const location: any = options.projectSearch === undefined ? { pathname: '/canvas/' + canvasId, href: 'tapnow://app/canvas/' + canvasId, search: '' }
     : { pathname: '/p/11111111-2222-3333-4444-555555555555', search: options.projectSearch, href: 'tapnow://app/p/11111111-2222-3333-4444-555555555555' + options.projectSearch };
@@ -57,6 +58,7 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
     return { id: 'native-' + factories, type: kind, position: { x: 0, y: 0 }, data: initialized, ...config };
   };
   const native: any = {
+    generationHistory: async (_canvasId:string,_nodeId:string,limit:number)=>({items:[],resource_total:0,limit}),
     savePolicy: options.savePolicy,
     factories: { text: make('text'), textGenerate: make('text'), image: make('image'), imageUpload: make('image'), videoUpload: make('video'), audio: make('audio'), group: make('group') },
     modelRegistries: { image: options.modelDefaults?.image ?? {}, audio: [{ model: 'audio-model', provider: 'native' }, ...Object.keys(options.modelDefaults?.audio ?? {}).map(model => ({ model, provider: 'native' }))] },
@@ -65,6 +67,9 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
     policy: { getState: () => ({ mergedPolicy: options.policy ?? {} }) }, selection: { getState: () => ({ setSelectedNodes() {} }) },
   };
   if (options.mentions) native.mentions = {
+    manage:async(args:any)=>{managementCalls.push(args);return {accepted:true};},
+    elements:async()=>options.mentions?.elementData,
+    elementMention:(id:string,alias:string)=>'{{ElementRef:'+id+':'+encodeURIComponent(alias)+'}}',
     parseAsset(payload: any) { return options.mentions?.rejectAsset ? null : payload; },
     library: {
       async list(args: any) {
@@ -126,6 +131,7 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
     mentionState: () => ({ promptDraft, promptChanges, libraryGets }),
     historyCalls: () => ({ ...historyCalls }),
     uploadedFile: () => uploadedFile,
+    managementCalls: () => JSON.parse(JSON.stringify(managementCalls)),
   };
 }
 
@@ -605,4 +611,28 @@ test('禁用保存策略时编辑、提示词与显式保存均不请求原生�
   assert.equal(saved.persistence.reason,'disabled');
   assert.equal(f.counters().flushes,0);
   assert.equal((await f.dispatch('inspect')).saveState,'unknown');
+});
+
+
+test('历史查询不编辑保存，库归档先完整校验所有节点再调用原生接口',async()=>{
+ const initialNodes=[{id:'text',type:'text',position:{x:0,y:0},data:{title:'note',text:'hello'}},{id:'pending',type:'image',position:{x:0,y:0},data:{src:'',taskInfo:{status:'processing'}}}];
+ const f=fixture({initialNodes,mentions:{},savePolicy:'disabled'});
+ const h=await f.dispatch('generationHistory',{canvasId,nodeId:'text',limit:5});assert.equal(h.resource_total,0);
+ assert.equal((await f.dispatch('generationHistory',{canvasId,nodeId:'missing'})).error.code,'NODE_NOT_FOUND');
+ const invalid=await f.dispatch('libraryManage',{canvasId,action:'save_nodes',folderId:'1',nodeIds:['text','pending']});assert.equal(invalid.error.code,'REFERENCE_NOT_READY');assert.deepEqual(f.managementCalls(),[]);
+ const good=await f.dispatch('libraryManage',{canvasId,action:'save_nodes',folderId:'1',nodeIds:['text','text']});assert.equal(good.ok,true);assert.deepEqual(f.managementCalls()[0].assets,[{asset_type:4,name:'note',source_node_id:'text',content:'hello'}]);
+ assert.equal((await f.dispatch('libraryManage',{canvasId,action:'delete_asset'})).error.code,'INVALID_ARGUMENT');
+ assert.equal(f.counters().edits,0);assert.equal(f.counters().flushes,0);
+});
+
+
+test('Element 平铺详情与包装详情均能引用；身份不匹配和手写 token 在编辑前拒绝',async()=>{
+ for(const data of [{element_id:'123',name:'  角色 一  '},{element:{element_id:'123',name:'角色 一'}}]){
+  const f=fixture({mentions:{elementData:data},initialNodes:[{id:'generator',type:'video',position:{x:0,y:0},data:{type:'generate',prompt:'original'}}]});
+  const r=await f.dispatch('promptSet',{canvasId,nodeId:'generator',segments:[{type:'reference',source:'element',elementId:'123'}]});
+  assert.equal(r.ok,true);assert.equal(r.references[0].label,'角色 一');assert.equal(r.prompt,'{{ElementRef:123:'+encodeURIComponent('角色 一')+'}}');assert.equal(f.currentEdges().length,0);
+ }
+ const f=fixture({mentions:{elementData:{element_id:'other',name:'wrong'}},initialNodes:[{id:'generator',type:'video',position:{x:0,y:0},data:{type:'generate',prompt:'original'}}]});
+ assert.equal((await f.dispatch('promptSet',{canvasId,nodeId:'generator',segments:[{type:'reference',source:'element',elementId:'123'}]})).error.code,'ELEMENT_NOT_FOUND');
+ assert.equal((await f.dispatch('promptSet',{canvasId,nodeId:'generator',segments:[{type:'text',text:'{{ElementRef:123:raw}}'}]})).error.code,'RESERVED_REFERENCE_TOKEN');assert.equal(f.counters().edits,0);
 });

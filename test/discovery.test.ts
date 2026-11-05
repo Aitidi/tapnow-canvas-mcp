@@ -3,6 +3,29 @@ import { test } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { discoverNativeModules } from '../src/adapter/discovery.js';
 
+test('保存只调用拥有当前画布的队列，不尝试旧队列，不在失败后重放',async()=>{
+  const calls:string[]=[];
+  const persistence=[{registered:(id:string)=>id==='old',flush:async()=>{calls.push('old');return 'saved'}},{registered:(id:string)=>id==='new',flush:async()=>{calls.push('new');return 'failed'}}];
+  const sandbox:any={URL,__name:(x:any)=>x,location:{href:'tapnow://app/canvas/new'},document:{scripts:[],querySelectorAll:()=>[]},__tapnowCanvasMcpPersistence:persistence};
+  const native=await runInNewContext(`(${discoverNativeModules.toString()})()`,sandbox);
+  assert.deepEqual(calls,[]);assert.equal(await native.flush('new'),'failed');assert.deepEqual(calls,['new']);
+  await assert.rejects(native.flush('missing'),(e:any)=>e.code==='SAVE_QUEUE_UNAVAILABLE');
+  persistence.push({registered:id=>id==='new',flush:async()=>{throw Error('must not run')}});
+  await assert.rejects(native.flush('new'),(e:any)=>e.code==='SAVE_QUEUE_UNAVAILABLE');assert.deepEqual(calls,['new']);
+});
+
+test('生成历史发现不调用接口；查询使用原生 send 并拒绝业务失败', async () => {
+  const calls:any[]=[]; let code=0;
+  const endpoint={GENERATION_HISTORY:()=>''};
+  const api={getNodeGenerationHistory:(args:any)=>{ endpoint.GENERATION_HISTORY();calls.push(args);return {send:async()=>({code,data:{items:[],resource_total:0}})};}};
+  const sandbox={URL,__name:(v:any)=>v,location:{href:'tapnow://app/canvas/test'},document:{scripts:[{src:'tapnow://app/assets/vendor-pkg-endpoints-AAAAAAAA.js'}],querySelectorAll:()=>[]},load:async()=>({api})};
+  const native=await runInNewContext(`(${discoverNativeModules.toString().replace('await import(url)','await load(url)')})()`,sandbox);
+  assert.deepEqual(calls,[]);
+  assert.equal((await native.generationHistory('canvas','node',5)).resource_total,0);
+  assert.deepEqual(JSON.parse(JSON.stringify(calls)),[{canvas_id:'canvas',node_id:'node',limit:5}]);
+  code=403;await assert.rejects(native.generationHistory('canvas','node',5),(e:any)=>e.code==='HISTORY_ERROR');
+});
+
 test('新版上传器类在发现时不实例化，实际上传时复用原生实例并检查返回值', async () => {
   let constructions = 0, uploads = 0;
   class UploadManager {

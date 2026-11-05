@@ -1,5 +1,5 @@
 /** Serialized into the renderer. Keep this function self-contained; never accept code from tool inputs. */
-export function installRuntime(native: any) {
+export function installRuntime(native: any, advancedInstaller?: any) {
   const w = globalThis as any;
   if (w.__tapnowCanvasMcp?.version === 1) return { installed: true };
   const failure = (code: string, message: string, details?: any): never => { throw Object.assign(new Error(message), { code, details }); };
@@ -419,16 +419,18 @@ export function installRuntime(native: any) {
       if (segment.type === 'text') {
         if (typeof segment.text !== 'string') failure('INVALID_ARGUMENT', '文字片段必须提供 text。');
         textLength += segment.text.length;
-        if (/\{\{(?:Asset:|(?:Image|Video|Audio|Text)\s+\d+)/.test(segment.text)) failure('RESERVED_REFERENCE_TOKEN', '请使用 reference 片段插入原生素材引用，不要在文字中手工拼接引用标记。');
-      } else if (segment.type === 'reference' && ['canvas', 'library'].includes(segment.source)) {
+        if (/\{\{(?:Asset:|ElementRef:|node\/|library_asset\/|library_folder\/|element\/|(?:Image|Video|Audio|Text)\s+\d+)/.test(segment.text)) failure('RESERVED_REFERENCE_TOKEN', '请使用 reference 片段插入原生素材引用，不要在文字中手工拼接引用标记。');
+      } else if (segment.type === 'reference' && ['canvas', 'library','element'].includes(segment.source)) {
         referenceCount++;
-        const id = segment.source === 'canvas' ? segment.nodeId : segment.assetId;
+        const id = segment.source === 'canvas' ? segment.nodeId : segment.source==='element'?segment.elementId:segment.assetId;
         if (typeof id !== 'string' || !id) failure('INVALID_ARGUMENT', '素材引用缺少身份标识。');
         references.set(segment.source + ':' + id, { source: segment.source, id });
       } else failure('INVALID_ARGUMENT', '未知提示词片段类型或素材来源。');
     }
     if (textLength > 200000 || referenceCount > 32) failure('INVALID_ARGUMENT', '提示词超过 200000 字符或 32 个引用片段。');
     const libraryReferences = [...references.values()].filter(r => r.source === 'library');
+    const elementReferences=[...references.values()].filter(r=>r.source==='element');
+    if(elementReferences.length&&(!native.mentions?.elements||!native.mentions?.elementMention))failure('CAPABILITY_UNAVAILABLE','当前版本无法校验 Element 引用。');
     if (libraryReferences.length && (!native.mentions?.library?.get || !native.mentions?.parseAsset)) failure('CAPABILITY_UNAVAILABLE', '当前版本无法校验素材库引用。');
     // Validate all canvas sources and all library metadata before any persistent edit.
     for (const ref of references.values()) {
@@ -441,6 +443,7 @@ export function installRuntime(native: any) {
       Object.assign(ref, material);
     }
     await Promise.all(libraryReferences.map(async ref => { ref.material = await native.mentions.library.get(ref.id); }));
+    await Promise.all(elementReferences.map(async ref=>{const data=await native.mentions.elements({action:'get',elementId:ref.id});const element=data.element??data.detail?.element??data;if(!element||String(element.element_id??element.id)!==ref.id||typeof element.name!=='string'||!element.name.trim())failure('ELEMENT_NOT_FOUND','Element 不存在或不可访问。');ref.label=element.name.trim();ref.kind='element';ref.token=native.mentions.elementMention(ref.id,ref.label);}));
     guard(args.canvasId); b = bindings(); writable(b);
     for (const ref of libraryReferences) {
       const m = ref.material;
@@ -474,7 +477,7 @@ export function installRuntime(native: any) {
       if (matches.length !== 1 || !/^(?:Image|Video|Audio|Text)\s+\d+$/.test(matches[0].renderText ?? '')) failure('REFERENCE_UNAVAILABLE', '原生提示词面板没有唯一匹配的素材编号引用。', { nodeId: ref.id, addedEdgeIds });
       ref.token = '{{' + matches[0].renderText + '}}'; ref.label = matches[0].label;
     }
-    const prompt = args.segments.map((segment: any) => segment.type === 'text' ? segment.text : references.get(segment.source + ':' + (segment.nodeId ?? segment.assetId)).token).join('');
+    const prompt = args.segments.map((segment: any) => segment.type === 'text' ? segment.text : references.get(segment.source + ':' + (segment.nodeId ?? segment.assetId??segment.elementId)).token).join('');
     if (prompt.length > 400000) failure('INVALID_ARGUMENT', '引用元数据使提示词过长，请减少引用或文字内容。');
     guard(args.canvasId); writable(b);
     const current = node(b, args.nodeId);
@@ -485,7 +488,7 @@ export function installRuntime(native: any) {
     if (promptValue(node(b, current.id)) !== prompt) failure('EDIT_REJECTED', '应用未接受提示词修改。', { addedEdgeIds });
     const persistence = await flush(args.canvasId);
     editor = promptEditor(bindings(), args.nodeId);
-    return { canvasId: args.canvasId, nodeId: args.nodeId, prompt, references: [...references.values()].map(ref => ({ source: ref.source, ...(ref.source === 'canvas' ? { nodeId: ref.id } : { assetId: ref.id }), kind: ref.kind, label: ref.label, token: ref.token })), addedEdgeIds, renderedMentionIds: editor?.ref.getMentionIds?.() ?? null, persistence };
+    return { canvasId: args.canvasId, nodeId: args.nodeId, prompt, references: [...references.values()].map(ref => ({ source: ref.source, ...(ref.source === 'canvas' ? { nodeId: ref.id } : ref.source==='element'?{elementId:ref.id}:{ assetId: ref.id }), kind: ref.kind, label: ref.label, token: ref.token })), addedEdgeIds, renderedMentionIds: editor?.ref.getMentionIds?.() ?? null, persistence };
   }
   function generationPanel(b: any, nodeId: string) {
     const candidates = b.all.map((f: any) => f.memoizedProps).filter((p: any) => p?.nodeId === nodeId && typeof p.onGenerate === 'function');
@@ -615,6 +618,7 @@ export function installRuntime(native: any) {
     b = await changes(b, [{ type: 'add', item: n }]); node(b, n.id);
     return { canvasId: b.id, nodeId: n.id, url: info.url, persistence: await flush(b.id) };
   }
+  const advanced=typeof advancedInstaller==='function'?advancedInstaller(native,{guard,bindings,node,nodes,edges,writable,changes,makeNode,runEdit,flush,snapshot,pause,prepareGeneration,generationPanel}):{};
   async function dispatch(action: string, args: any = {}) {
     try {
       let result: any;
@@ -630,6 +634,41 @@ export function installRuntime(native: any) {
         case 'view': result = await setView(args); break;
         case 'save': result = { canvasId: args.canvasId, persistence: await flush(args.canvasId) }; break;
         case 'capabilities': result = { models: clean(native.modelRegistries), supportedNodeKinds: supportedKinds(), submissionMethod: 'native-generation-panel' }; break;
+        case 'generationHistory': {
+          guard(args.canvasId); node(bindings(), args.nodeId);
+          if (typeof native.generationHistory !== 'function') failure('CAPABILITY_UNAVAILABLE', '当前版本未找到生成历史读取入口。');
+          const limit = args.limit ?? 20;
+          if (!Number.isInteger(limit) || limit < 1 || limit > 100) failure('INVALID_ARGUMENT', '历史数量必须为 1–100。');
+          const history = await native.generationHistory(args.canvasId, args.nodeId, limit);
+          guard(args.canvasId);
+          result = { canvasId: args.canvasId, nodeId: args.nodeId, ...history }; break;
+        }
+        case 'libraryManage': {
+          guard(args.canvasId);
+          const actions = ['folders', 'create_folder', 'rename_asset', 'move_asset', 'save_nodes'];
+          if (!actions.includes(args.action)) failure('INVALID_ARGUMENT', '未知素材库操作。');
+          if (!native.mentions?.manage) failure('CAPABILITY_UNAVAILABLE', '当前版本未找到素材库管理入口。');
+          if (args.action !== 'folders') writable(bindings());
+          for (const key of args.action === 'create_folder' ? ['parentId', 'name'] : args.action === 'rename_asset' ? ['assetId', 'name'] : args.action === 'move_asset' ? ['assetId', 'folderId'] : args.action === 'save_nodes' ? ['folderId'] : []) {
+            if (typeof args[key] !== 'string' || !args[key].trim()) failure('INVALID_ARGUMENT', '素材库操作缺少 ' + key);
+            if (key !== 'name' && !/^\d{1,30}$/.test(args[key])) failure('INVALID_ARGUMENT', '素材库身份标识必须来自查询结果。');
+          }
+          if (args.space !== undefined && !['personal', 'team'].includes(args.space)) failure('INVALID_ARGUMENT', 'space 必须为 personal 或 team。');
+          const parameters = { ...args };
+          if (args.action === 'save_nodes') {
+            if (!Array.isArray(args.nodeIds) || !args.nodeIds.length || args.nodeIds.length > 100) failure('INVALID_ARGUMENT', '请选择 1–100 个节点。');
+            parameters.assets = [...new Set<string>(args.nodeIds)].map(id => {
+              const n = node(bindings(), id), m = canvasMaterial(n);
+              if (!['text', 'image', 'video', 'audio'].includes(n.type) || !m.usable) failure('REFERENCE_NOT_READY', '节点尚无可归档内容。', { nodeId: id });
+              return { asset_type: ({image:1,video:2,audio:3,text:4} as any)[n.type], name: m.label,
+                source_node_id: id, ...(n.type === 'text' ? {content: n.data.text} : {source_url: n.data.src}),
+                ...(n.type === 'image' ? {thumbnail_url:n.data.src} : {}) };
+            });
+          }
+          const data = await native.mentions.manage(parameters);
+          guard(args.canvasId);
+          result = { canvasId: args.canvasId, action: args.action, data }; break;
+        }
         case 'prepareGeneration': result = await prepareGeneration(args); break;
         case 'submitGeneration': result = await submitGeneration(args); break;
         case 'generationStatus': {
@@ -659,7 +698,7 @@ export function installRuntime(native: any) {
           result = { ...snapshot(bindings()), historyAction: args.action, changed: state !== null, persistence }; break;
         }
         case 'guard': guard(args.canvasId); result = { canvasId: args.canvasId }; break;
-        default: failure('INVALID_ACTION', '未知适配层动作。');
+        default: if(typeof advanced[action]==='function')result=await advanced[action](args);else failure('INVALID_ACTION', '未知适配层动作。');
       }
       return { ok: true, ...clean(result) };
     } catch (e: any) { return { ok: false, error: { code: e.code ?? 'ADAPTER_ERROR', message: e.message ?? String(e), ...(e.details ? { details: clean(e.details) } : {}) } }; }

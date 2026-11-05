@@ -12,6 +12,8 @@ const expected = [
   'tapnow_generation_submit', 'tapnow_generation_status', 'tapnow_history',
   'tapnow_canvas_save', 'tapnow_canvas_screenshot',
   'tapnow_prompt_references', 'tapnow_prompt_set',
+  'tapnow_generation_history', 'tapnow_asset_download', 'tapnow_library',
+  'tapnow_history_restore','tapnow_image_tools','tapnow_canvas_manage','tapnow_elements','tapnow_generation_control',
 ].sort();
 const env: Record<string, string> = {};
 for (const [key, value] of Object.entries(process.env)) if (value !== undefined) env[key] = value;

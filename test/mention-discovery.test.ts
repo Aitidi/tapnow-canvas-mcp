@@ -4,6 +4,7 @@ import { runInNewContext } from 'node:vm';
 import { discoverMentionNative } from '../src/adapter/mention-discovery.js';
 
 type FixtureOptions = {
+  managementCode?: number;
   webSplit?: boolean;
   webScoped?: boolean;
   personal?: number;
@@ -31,6 +32,7 @@ async function fixture(options: FixtureOptions = {}) {
   };
   const handler = async (endpoint: string, args: any) => {
     calls.push({ endpoint, args: JSON.parse(JSON.stringify(args)) });
+    if (['folders','create','rename','move','save'].includes(endpoint)) return {code:options.managementCode??0,data:endpoint==='folders'?{folders:[]}:{accepted:true}};
     if (endpoint === 'search') return { data: group(args.space_type - 1, args.page, args.page_size) };
     if (endpoint === 'list') return { data: {
       private_group: group(0, args.private_page, args.private_page_size),
@@ -60,6 +62,7 @@ async function fixture(options: FixtureOptions = {}) {
     function relationSchema(a){return {asset_id:a.asset_id,asset_type:a.asset_type,compliance_status:a.compliance_status};}
     globalThis.nativeModule={relationSchema,parser,tokenParser,expander,normalize,textContent,api};
   `, sandbox);
+  for(const [name,endpoint] of Object.entries({listFolderTree:'folders',createFolder:'create',renameAsset:'rename',moveAsset:'move',saveAssets:'save'})) sandbox.nativeModule.api[name]=async(args:any)=>handler(endpoint,args);
   if (options.webScoped) sandbox.__tapnowCanvasMcpScopedNative = Object.values(sandbox.nativeModule).filter(value => typeof value === 'function');
   sandbox.load = async (url: string) => options.webScoped ? { relationSchema: sandbox.nativeModule.relationSchema, api: sandbox.nativeModule.api } : options.webSplit
     ? Object.fromEntries(Object.entries(sandbox.nativeModule).filter(([key]) => url.includes('vendor-pkg-canvas-') ? ['parser', 'tokenParser', 'expander'].includes(key) : ['normalize', 'textContent', 'api'].includes(key)))
@@ -67,8 +70,20 @@ async function fixture(options: FixtureOptions = {}) {
   const source = discoverMentionNative.toString();
   assert.equal(source.split('await import(moduleUrl)').length, 2, '测试仅替换唯一原生模块加载位置');
   const api = await runInNewContext(`(${source.replace('await import(moduleUrl)', 'await load(moduleUrl)')})()`, sandbox);
-  return { list: async (args: any = {}) => JSON.parse(JSON.stringify(await api.library.list(args))), calls };
+  return { list: async (args: any = {}) => JSON.parse(JSON.stringify(await api.library.list(args))), manage:(args:any)=>api.manage(args), calls };
 }
+
+test('素材库管理仅映射已知动作，保留个人/团队空间且拒绝业务失败',async()=>{
+  const f=await fixture();assert.deepEqual(f.calls,[]);
+  await f.manage({action:'folders',space:'team'});
+  await f.manage({action:'create_folder',space:'personal',parentId:'0',name:'test'});
+  await f.manage({action:'rename_asset',assetId:'12',name:'new'});
+  await f.manage({action:'move_asset',assetId:'12',space:'team',folderId:'34'});
+  await f.manage({action:'save_nodes',folderId:'34',assets:[{asset_type:4,content:'text'}]});
+  assert.deepEqual(f.calls,[{endpoint:'folders',args:{space_type:2}},{endpoint:'create',args:{space_type:1,parent_id:'0',name:'test'}},{endpoint:'rename',args:{asset_id:'12',name:'new'}},{endpoint:'move',args:{asset_id:'12',target_space:2,target_folder_id:'34'}},{endpoint:'save',args:{folder_id:'34',assets:[{asset_type:4,content:'text'}]}}]);
+  await assert.rejects(f.manage({action:'delete_asset'}),(e:any)=>e.code==='CAPABILITY_UNAVAILABLE');
+  await assert.rejects((await fixture({managementCode:403})).manage({action:'folders'}),(e:any)=>e.code==='LIBRARY_ERROR');
+});
 
 test('网页 @素材发现跨两个官方 CDN 包组合原生解析与素材库，发现阶段不发起素材请求', async () => {
   const f = await fixture({ webSplit: true, personal: 2, team: 0 });

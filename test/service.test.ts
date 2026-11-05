@@ -20,6 +20,15 @@ async function fixture(t: TestContext) {
   return { create, directory };
 }
 
+test('失败任务重试只建立一次请求记录；重放不重复准备或提交',async t=>{
+  const f=await fixture(t),service=f.create();const calls:string[]=[];
+  (service as any).invoke=async(action:string)=>{calls.push(action);return action==='submitGeneration'?{ok:true,taskId:'retry-task'}:{ok:true,ready:true}};
+  const args={canvasId,nodeId:'failed-node',requestId:'retry-one',action:'retry',allowPaid:true};
+  await assert.rejects(service.generationControl({...args,allowPaid:false}),{code:'PAID_AUTHORIZATION_REQUIRED'});
+  assert.equal((await service.generationControl(args)).taskId,'retry-task');assert.equal((await service.generationControl(args)).replayed,true);
+  assert.deepEqual(calls,['taskControl','submitGeneration']);
+});
+
 test('画布 guard 拒绝时不调用编辑且不建立请求账本', async t => {
   const f = await fixture(t), service = f.create();
   let writes = 0;

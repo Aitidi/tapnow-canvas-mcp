@@ -54,7 +54,7 @@ test('仅双端模式的工具接受 target', async () => {
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     try {
       const tools = (await client.listTools()).tools;
-      assert.equal(tools.length, 14);
+      assert.equal(tools.length, 22);
       for (const tool of tools) assert.equal('target' in (tool.inputSchema.properties ?? {}), dual, tool.name);
     } finally { await client.close(); }
   }

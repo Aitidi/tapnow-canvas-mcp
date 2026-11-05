@@ -36,7 +36,7 @@ export async function discoverNativeModules(): Promise<any> {
     });
   const factories: Record<string, any> = {};
   const modelRegistries: Record<string, any> = {};
-  let flush: any, upload: any, policy: any, selection: any;
+  let flush: any, upload: any, policy: any, selection: any, generationHistory: any, normalizeHistory: any, canvasApi: any;
   const audioModels = new Map<string, any>();
   const failures: string[] = [];
   const source = (value: any): string => {
@@ -56,6 +56,7 @@ export async function discoverNativeModules(): Promise<any> {
       try {
         if (typeof value === 'function') {
           const src = source(value);
+          if (/rawGenerationParams:/.test(src) && /sourceFileIds:/.test(src) && /\.resources\.map\(/.test(src) && /createdAt:/.test(src)) normalizeHistory ??= value;
           // 0.4.20x exports the uploader class instead of its singleton. Delay
           // construction until an actual import, so discovery stays read-only.
           const prototype = value.prototype;
@@ -102,6 +103,23 @@ export async function discoverNativeModules(): Promise<any> {
             }
           }
         } else if (value && typeof value === 'object') {
+          if (['getAllCanvas','getCanvas','createCanvas'].every(k=>hasOwnMethod(value,k)) && /\.GET_ALL_CANVAS/.test(source(value.getAllCanvas))) {
+            const send = async (call:any) => { const r=await call.send(); if(r?.code!==0 || !r.data) throw Object.assign(new Error('Tapnow 画布接口未确认成功。'),{code:'CANVAS_API_ERROR'}); return r.data; };
+            canvasApi ??= {
+              list: (args:any)=>send(value.getAllCanvas({offset:args.offset??0,limit:args.limit??20,sort_by:'updated_at',sort_order:'desc'})),
+              get: (canvasId:string)=>send(value.getCanvas({canvas_id:canvasId,with_nodes:false,with_connections:false})),
+              create: (args:any)=>send(value.createCanvas({name:args.name,description:args.description??'',is_public:false})),
+            };
+          }
+          if (hasOwnMethod(value, 'getNodeGenerationHistory') && /\.GENERATION_HISTORY\(/.test(source(value.getNodeGenerationHistory))) {
+            generationHistory ??= async (canvasId: string, nodeId: string, limit: number) => {
+              const response = await value.getNodeGenerationHistory({ canvas_id: canvasId, node_id: nodeId, limit }).send();
+              if (response?.code !== 0 || !Array.isArray(response.data?.items)) {
+                throw Object.assign(new Error('Tapnow 未返回有效的节点生成历史。'), { code: 'HISTORY_ERROR' });
+              }
+              return response.data;
+            };
+          }
           // The native uploader is a class instance; hooks exposing uploadFile are
           // excluded. Preserve its receiver so its validation/fallback stays intact.
           const prototype = Object.getPrototypeOf(value);
@@ -134,5 +152,13 @@ export async function discoverNativeModules(): Promise<any> {
     }
   }
   if (audioModels.size) modelRegistries.audio = [...audioModels.values()];
-  return { factories, modelRegistries, flush, upload, policy, selection, moduleUrls, failures };
+  const persistence = base.protocol === 'tapnow:' ? (globalThis as any).__tapnowCanvasMcpPersistence : undefined;
+  if (Array.isArray(persistence) && persistence.length) {
+    flush = async (canvasId:string) => {
+      const matches = persistence.filter(p => typeof p.registered === 'function' && typeof p.flush === 'function' && p.registered(canvasId));
+      if (matches.length !== 1) throw Object.assign(new Error('当前画布没有唯一匹配的原生保存队列。'), {code:'SAVE_QUEUE_UNAVAILABLE'});
+      return matches[0].flush(canvasId);
+    };
+  }
+  return { factories, modelRegistries, flush, upload, policy, selection, generationHistory, normalizeHistory, canvasApi, moduleUrls, failures };
 }

@@ -26,13 +26,15 @@ export async function discoverMentionNative(nativeModuleUrls: string[] = []): Pr
   const fail = (code: string, message: string, details?: any): never => {
     throw Object.assign(new Error(message), { code, ...(details ? { details } : {}) });
   };
-  let parser: any, tokenParser: any, expander: any, normalizeAsset: any, textContent: any, api: any;
+  let parser: any, tokenParser: any, expander: any, normalizeAsset: any, textContent: any, api: any, elementFormat:any, elementParse:any;
   for (const moduleUrl of urls) {
     let module: any;
     try { module = await import(moduleUrl); } catch { continue; }
     const scoped = base.origin === 'https://app.tapnow.ai' || base.protocol === 'tapnow:' ?(globalThis as any).__tapnowCanvasMcpScopedNative : undefined;
     for (const value of [...Object.values(module), ...Array.isArray(scoped) ? scoped : []] as any[]) {
       const src = source(value);
+      if (/\{id:[\w$]+\.element_id,label:[\w$]+\.alias\}/.test(src)) elementFormat ??= value;
+      if (/element_id:[\w$]+\.id,alias:[\w$]+\.label/.test(src) && /:null/.test(src)) elementParse ??= value;
       if (src && /\.nodeType/.test(src) && /\.nodeId/.test(src) && /\.assetId/.test(src) &&
         /nodeName:/.test(src) && /mediaSrc:/.test(src) && /previewImage:/.test(src) &&
         /durationMs:/.test(src) && /official:/.test(src) && /return null/.test(src)) parser ??= value;
@@ -91,6 +93,32 @@ export async function discoverMentionNative(nativeModuleUrls: string[] = []): Pr
   };
   return {
     moduleUrls: urls,
+    async elements(args:any) {
+      const method=args.action==='get'?'getElement':args.query?.trim()?'searchElements':'listElements';
+      if(typeof ownFunction(api,method)!=='function') fail('CAPABILITY_UNAVAILABLE','当前版本未提供 Element 查询入口。');
+      const response=await libraryCall(()=>api[method](args.action==='get'?{element_id:args.elementId}:{space_type:args.space==='team'?2:1,page:args.page??1,page_size:args.limit??20,...args.query?.trim()?{keyword:args.query.trim()}:{} }));
+      if(response?.code!==0||!response.data)fail('LIBRARY_ERROR','Element 查询失败。');
+      return response.data;
+    },
+    elementMention(elementId:string,alias:string) {
+      if(!elementFormat||!elementParse)fail('CAPABILITY_UNAVAILABLE','当前版本未提供 Element 原生引用编码。');
+      const token=elementFormat({element_id:elementId,alias}),parsed=elementParse(token);
+      if(parsed?.element_id!==elementId||parsed?.alias!==alias)fail('UNSUPPORTED_VERSION','Element 原生引用校验失败。');
+      return '{{'+token+'}}';
+    },
+    async manage(args: any) {
+      const methods: Record<string, string> = { folders: 'listFolderTree', create_folder: 'createFolder', rename_asset: 'renameAsset', move_asset: 'moveAsset', save_nodes: 'saveAssets' };
+      const method = methods[args.action];
+      if (!method || typeof ownFunction(api, method) !== 'function') fail('CAPABILITY_UNAVAILABLE', '当前版本未提供所需素材库管理入口。');
+      const parameters = args.action === 'folders' ? { space_type: args.space === 'team' ? 2 : 1 }
+        : args.action === 'create_folder' ? { space_type: args.space === 'team' ? 2 : 1, parent_id: args.parentId, name: args.name }
+        : args.action === 'rename_asset' ? { asset_id: args.assetId, name: args.name }
+        : args.action === 'move_asset' ? { asset_id: args.assetId, target_space: args.space === 'team' ? 2 : 1, target_folder_id: args.folderId }
+        : { folder_id: args.folderId, assets: args.assets };
+      const response = await libraryCall(() => api[method](parameters));
+      if (response?.code !== 0 || args.action === 'folders' && !Array.isArray(response.data?.folders)) fail('LIBRARY_ERROR', 'Tapnow 素材库操作未确认成功。');
+      return response.data ?? {};
+    },
     parseAsset: (payload: any) => {
       try {
         const value = typeof payload === 'string' ? payload : `Asset:${JSON.stringify(payload)}`;
