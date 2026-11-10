@@ -3,7 +3,7 @@ import type { CdpConnection } from '../cdp.js';
 /** Only native constructors and mention helpers; never transfer arbitrary scope state. */
 export function isScopedNativeFunction(source: string) {
   const factory = /return\s*\{id:/.test(source) && /position:/.test(source) &&
-    /title:["'](?:Text|Audio|Upload Audio)["']/.test(source) && /\.(?:PURE|GENERATE|AUDIO|UPLOAD)/.test(source);
+    /title:(?:["'](?:Text|Audio|Upload Audio)["']|[\w$]+\(["'](?:text|audio|uploadAudio)["']\))/.test(source) && /\.(?:PURE|GENERATE|AUDIO|UPLOAD)/.test(source);
   const parser = /\.nodeType/.test(source) && /\.nodeId/.test(source) && /\.assetId/.test(source) && /nodeName:/.test(source) && /mediaSrc:/.test(source) && /return null/.test(source);
   const tokens = /\.indexOf\(["']\{\{Asset:/.test(source) && /\.endIndex/.test(source) && /\.content/.test(source) && /\.push\(/.test(source) && /return\[\]/.test(source) && !/images:|videos:|audios:/.test(source);
   const expand = /allowedNodeTypes/.test(source) && /allowLegacyNodePayload/.test(source) && /\.indexOf\(["']\{\{Asset:/.test(source) && /images:/.test(source) && /videos:/.test(source) && /audios:/.test(source);

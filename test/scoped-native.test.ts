@@ -17,6 +17,12 @@ test('新版模块首项为重导出包装器时优先选择已识别的本模�
   await collectScopedNative(cdp);
 });
 
+test('作用域发现接受 0.4.25x 本地化标题的文字和音频工厂，不接受其他本地化标题', () => {
+  assert.equal(isScopedNativeFunction('(e={},t)=>{const r={type:lb.PURE,title:yi("text"),...e};return{id:s,data:r,position:{x:0,y:0},...t}}'), true);
+  assert.equal(isScopedNativeFunction('(e,t,n)=>{return{id:s,type:te.AUDIO,position:t,data:{title:yi("audio"),...e}}}'), true);
+  assert.equal(isScopedNativeFunction('(e={},t)=>{const r={type:Hr.EDIT,title:yi("timeline"),...e};return{id:s,data:r,position:{x:0,y:0},...t}}'), false);
+});
+
 const parser = 'function parse(e){const a=e.assetId,n=e.nodeId,t=e.nodeType;if(!a)return null;return{nodeName:e.nodeName,mediaSrc:e.mediaSrc,nodeId:n,nodeType:t}}';
 
 test('私有模块发现只转移 Module 中已识别函数，跳过 Global、Closure 与普通状态', async () => {

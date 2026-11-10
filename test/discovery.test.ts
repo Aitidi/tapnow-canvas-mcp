@@ -69,6 +69,62 @@ test('网页原生发现仅加载已暴露的官方 CDN 能力包，排除跟踪
   assert.deepEqual(imports, []);
 });
 
+const discover = (exports: any, href = 'tapnow://app/canvas/test') => runInNewContext(
+  `(${discoverNativeModules.toString().replace('await import(url)', 'await load(url)')})()`,
+  { URL, __name: (value: any) => value, location: { href },
+    document: { scripts: [{ src: 'tapnow://app/assets/vendor-pkg-endpoints-AAAAAAAA.js' }], querySelectorAll: () => [] },
+    load: async () => exports });
+
+test('0.4.25x 本地化标题的原生工厂可被识别，编辑/放大等其他工厂不会被误认', async () => {
+  // Evaluated as source so the shapes stay exactly as in the shipped minified bundle.
+  const exports = runInNewContext(`const yi=k=>k,te={TEXT:'text',IMAGE:'image',VIDEO:'video',AUDIO:'audio'},lb={PURE:'pure',GENERATE:'generate'},Hr={GENERATE:'generate',UPLOAD:'upload',EDIT:'edit'},qi={GENERATE:'generate',UPLOAD:'upload'},wp={DEFAULT:'default'};({
+    edit:(e={},t)=>{const r={title:yi("editImage"),type:Hr.EDIT,...e};return{id:'edit',type:te.IMAGE,data:r,position:{x:0,y:0},...t}},
+    text:(e={},t)=>{const r={type:lb.PURE,title:yi("text"),text:"",...e};return{id:'text',type:te.TEXT,data:r,position:{x:0,y:0},...t}},
+    textGenerate:(e={},t)=>{const y={type:lb.GENERATE,title:yi("text"),text:"",...e};return{id:'tg',type:te.TEXT,data:y,position:{x:0,y:0},...t}},
+    image:(e={},t)=>{const r={src:"",title:yi("image"),type:Hr.GENERATE,...e};return{id:'img',type:te.IMAGE,data:r,position:{x:0,y:0},...t}},
+    imageUpload:(e={},t)=>{const r={src:"",title:yi("uploadImage"),type:Hr.UPLOAD,...e};return{id:'iu',type:te.IMAGE,data:r,position:{x:0,y:0},...t}},
+    video:(e={},t)=>{const r={src:"",title:yi("video"),type:qi.GENERATE,...e};return{id:'vid',type:te.VIDEO,data:r,position:{x:0,y:0},...t}},
+    videoUpload:(e={},t)=>{const r={src:"",title:yi("uploadVideo"),type:qi.UPLOAD,...e};return{id:'vu',type:te.VIDEO,data:r,position:{x:0,y:0},...t}},
+    audio:(e,t,n)=>{return{id:'aud',type:te.AUDIO,position:t||{x:0,y:0},data:{type:wp.DEFAULT,title:yi("audio"),...e},selected:n}},
+  })`);
+  const { factories } = await discover(exports);
+  assert.deepEqual(Object.keys(factories).sort(), ['audio', 'image', 'imageUpload', 'text', 'textGenerate', 'video', 'videoUpload']);
+  assert.equal(factories.image({}, {}).id, 'img');
+  assert.equal(factories.audio({}, { position: { x: 1, y: 2 } }).position.x, 1);
+});
+
+test('旧版字面量标题的原生工厂仍可被识别', async () => {
+  const exports = runInNewContext(`const lb={PURE:'pure'};({text:(e={},t)=>{return{id:'text',position:{x:0,y:0},data:{title:"Text",type:lb.PURE,...e},...t}}})`);
+  assert.deepEqual(Object.keys((await discover(exports)).factories), ['text']);
+});
+
+// Serves `total` canvases per scope, honouring offset/limit; total is a string as the real API returns it.
+const listApi = (totals: Record<string, number>) => {
+  const calls: any[] = [];
+  // Discovery only accepts a getAllCanvas whose source names the endpoint constant.
+  const exports = runInNewContext(`const e={GET_ALL_CANVAS:''};({api:{getAllCanvas(a){e.GET_ALL_CANVAS;return{send:async()=>({code:0,data:respond(a)})}},getCanvas(){},createCanvas(){}}})`, {
+    respond: (a: any) => { calls.push(a); const total = totals[a.scope]; return { total: String(total), canvases: Array.from({ length: Math.max(0, Math.min(a.limit, total - a.offset)) }, (_, i) => ({ id: `${a.scope}-${a.offset + i}` })) }; },
+  });
+  return { calls, list: async (args: any) => (await discover(exports)).canvasApi.list(args) };
+};
+
+test('画布列表单一范围映射到原生 scope 并请求数字总数', async () => {
+  const { calls, list } = listApi({ personal: 1, team_shared: 66 });
+  const team = await list({ scope: 'team', limit: 5 });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].scope, 'team_shared'); assert.equal(calls[0].with_total, true);
+  assert.equal(team.total, 66); assert.equal(team.canvases.length, 5);
+  assert.equal((await list({ scope: 'personal' })).total, 1);
+});
+
+test('画布列表默认合并个人与团队，跨范围连续分页且总数正确', async () => {
+  const ids = async (args: any) => { const { list } = listApi({ personal: 3, team_shared: 4 }); const r = await list(args); assert.equal(r.total, 7); return Array.from(r.canvases, (c: any) => c.id); };
+  assert.deepEqual(await ids({ limit: 2 }), ['personal-0', 'personal-1']);
+  assert.deepEqual(await ids({ offset: 2, limit: 3 }), ['personal-2', 'team_shared-0', 'team_shared-1']);
+  assert.deepEqual(await ids({ offset: 5, limit: 3 }), ['team_shared-2', 'team_shared-3']);
+  assert.deepEqual(await ids({ offset: 9, limit: 3 }), []);
+});
+
 test('0.4.15x 桌面端从入口脚本找到延迟加载的 canvas-v2 主包，只加载已知能力包', async () => {
   const assets = 'tapnow://app/assets/';
   const imports: string[] = [], fetched: string[] = [];

@@ -81,7 +81,11 @@ export async function discoverNativeModules(): Promise<any> {
           }
           // Every accepted constructor must produce a native canvas-node shape.
           if (/return\s*\{id:/.test(src) && /position:/.test(src)) {
-            const title = /title:\s*["']([^"']+)["']/.exec(src)?.[1];
+            // 0.4.25x localizes default titles: title:yi("uploadImage") instead of a literal.
+            const titleMatch = /title:\s*(?:["']([^"']+)["']|[\w$]+\(["']([\w.]+)["']\))/.exec(src);
+            const localizedTitles = new Map([['text', 'Text'], ['image', 'Image'], ['video', 'Video'], ['audio', 'Audio'],
+              ['uploadImage', 'Upload Image'], ['uploadVideo', 'Upload Video'], ['uploadAudio', 'Upload Audio'], ['group', 'Group']]);
+            const title = titleMatch?.[1] ?? localizedTitles.get(titleMatch?.[2] ?? '');
             if (title === 'Text' && /\.PURE/.test(src)) factories.text ??= wrapFactory(value);
             else if (title === 'Text' && /\.GENERATE/.test(src)) factories.textGenerate ??= wrapFactory(value);
             else if (title === 'Image' && /\.GENERATE/.test(src)) factories.image ??= wrapFactory(value);
@@ -106,7 +110,17 @@ export async function discoverNativeModules(): Promise<any> {
           if (['getAllCanvas','getCanvas','createCanvas'].every(k=>hasOwnMethod(value,k)) && /\.GET_ALL_CANVAS/.test(source(value.getAllCanvas))) {
             const send = async (call:any) => { const r=await call.send(); if(r?.code!==0 || !r.data) throw Object.assign(new Error('Tapnow 画布接口未确认成功。'),{code:'CANVAS_API_ERROR'}); return r.data; };
             canvasApi ??= {
-              list: (args:any)=>send(value.getAllCanvas({offset:args.offset??0,limit:args.limit??20,sort_by:'updated_at',sort_order:'desc'})),
+              // Team canvases live in a separate scope; "all" serves personal first, then team, as one offset range.
+              list: async (args:any)=>{
+                const page=(scope:string,offset:number,limit:number)=>send(value.getAllCanvas({offset,limit,with_total:true,scope,sort_by:'updated_at',sort_order:'desc'}));
+                const offset=args.offset??0,limit=args.limit??20;
+                if(args.scope==='personal'||args.scope==='team'){const r=await page(args.scope==='team'?'team_shared':'personal',offset,limit);return {...r,total:Number(r.total)};}
+                const personal=await page('personal',offset,limit);
+                const personalTotal=Number(personal.total),remaining=limit-personal.canvases.length;
+                // A full personal page still needs the team total, so ask for one row and discard it.
+                const team=await page('team_shared',Math.max(0,offset-personalTotal),Math.max(1,remaining));
+                return {canvases:[...personal.canvases,...remaining>0?team.canvases:[]],total:personalTotal+Number(team.total)};
+              },
               get: (canvasId:string)=>send(value.getCanvas({canvas_id:canvasId,with_nodes:false,with_connections:false})),
               create: (args:any)=>send(value.createCanvas({name:args.name,description:args.description??'',is_public:false})),
             };
