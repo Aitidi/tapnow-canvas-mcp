@@ -241,6 +241,38 @@ test('批量编辑使用原生工厂和变化入口，别名解析后保存并�
   assert.equal((await f.dispatch('inspect')).saveState, 'saved');
 });
 
+test('未提供 position 时节点放在视口中央，同批次后续节点向下避开，显式位置不变', async () => {
+  const f = fixture();
+  await f.dispatch('edit', { canvasId, operations: [
+    { op: 'create', kind: 'text', data: { text: 'a' } },
+    { op: 'create', kind: 'text', data: { text: 'b' } },
+    { op: 'create', kind: 'text', data: { text: 'c' }, position: { x: 12, y: 34 } },
+  ] });
+  // Default 320×220 node centred in the 1280×800 fallback viewport at transform [0,0,1].
+  assert.deepEqual(f.currentNodes().map((n: any) => n.position), [{ x: 480, y: 290 }, { x: 480, y: 590 }, { x: 12, y: 34 }]);
+});
+
+test('未提供 position 时按同批次连线放在上游右侧或下游左侧，并避开已有节点，不移动已有节点', async () => {
+  const initialNodes = [
+    { id: 'source', type: 'image', position: { x: 100, y: 100 }, width: 300, height: 200, data: {} },
+    { id: 'blocker', type: 'image', position: { x: 480, y: 100 }, width: 300, height: 200, data: {} },
+    { id: 'target', type: 'video', position: { x: 2000, y: 500 }, width: 400, height: 225, data: {} },
+  ];
+  const f = fixture({ initialNodes: initialNodes.map(n => ({ ...n })) });
+  const result = await f.dispatch('edit', { canvasId, operations: [
+    { op: 'create', clientId: 'next', kind: 'text', data: { text: 'downstream of source' } },
+    { op: 'create', clientId: 'prev', kind: 'text', data: { text: 'upstream of target' } },
+    { op: 'connect', source: 'source', target: 'next' },
+    { op: 'connect', source: 'prev', target: 'target' },
+  ] });
+  assert.equal(result.results.every((r: any) => r.ok), true);
+  const byId = new Map(f.currentNodes().map((n: any) => [n.id, n.position]));
+  // Right of the source (100+300+80), pushed below the blocker sitting there (100+200+80).
+  assert.deepEqual(byId.get(result.aliases.next), { x: 480, y: 380 });
+  assert.deepEqual(byId.get(result.aliases.prev), { x: 2000 - 80 - 320, y: 500 });
+  for (const n of initialNodes) assert.deepEqual(byId.get(n.id), n.position);
+});
+
 test('批次中失败停止后续操作，已完成部分仍报告持久化结果', async () => {
   const f = fixture();
   const result = await f.dispatch('edit', { canvasId, operations: [

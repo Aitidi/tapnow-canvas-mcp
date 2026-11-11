@@ -121,6 +121,48 @@ export function installRuntime(native: any, advancedInstaller?: any) {
       edges: edges(b), selectedNodeIds: selected, viewport: { x: view[0], y: view[1], zoom: view[2] },
       saveState: saved.get(b.id) === signature(b) ? 'saved' : 'unknown' };
   }
+  /**
+   * Canvas position for a node created without one. Right of its upstream nodes, else left of its
+   * downstream nodes, else centred in the current view; then stepped down past existing nodes.
+   * Never moves existing nodes.
+   */
+  function placeNew(b: any, created: any, links: { up?: string[]; down?: string[] } = {}) {
+    const all = nodes(b).filter((n: any) => n.id !== created.id), byId = new Map(all.map((n: any) => [n.id, n]));
+    const absolute = (n: any, depth = 0): any => {
+      const parent = byId.get(n.parentId);
+      if (!parent || depth > 50) return n.position;
+      const p = absolute(parent, depth + 1);
+      return { x: p.x + n.position.x, y: p.y + n.position.y };
+    };
+    const box = (n: any) => ({ ...absolute(n), w: n.width ?? n.measured?.width ?? n.initialWidth ?? 320, h: n.height ?? n.measured?.height ?? n.initialHeight ?? 220 });
+    const { w, h } = box({ ...created, position: { x: 0, y: 0 }, parentId: undefined }), gap = 80;
+    const up = (links.up ?? []).map(id => byId.get(id)).filter(Boolean).map(box);
+    const down = (links.down ?? []).map(id => byId.get(id)).filter(Boolean).map(box);
+    let x: number, y: number;
+    if (up.length) { x = Math.max(...up.map(s => s.x + s.w)) + gap; y = Math.min(...up.map(s => s.y)); }
+    else if (down.length) { x = Math.min(...down.map(t => t.x)) - gap - w; y = Math.min(...down.map(t => t.y)); }
+    else {
+      const state = b.store.getState(), [tx, ty, zoom] = state.transform;
+      const width = state.width || (globalThis as any).innerWidth || 1280, height = state.height || (globalThis as any).innerHeight || 800;
+      x = (width / 2 - tx) / zoom - w / 2; y = (height / 2 - ty) / zoom - h / 2;
+    }
+    const boxes = all.map(box);
+    // Each step moves strictly below the overlapping node, so this terminates.
+    for (let i = 0; i < 1000; i++) {
+      const hit = boxes.find((o: any) => x < o.x + o.w + gap && x + w + gap > o.x && y < o.y + o.h + gap && y + h + gap > o.y);
+      if (!hit) break;
+      y = hit.y + hit.h + gap;
+    }
+    return { x: Math.round(x), y: Math.round(y) };
+  }
+  /** Connections later in the same batch that name this create's clientId. */
+  function batchLinks(operations: any[], index: number, resolve: (id: string) => string) {
+    const op = operations[index];
+    if (!op.clientId) return {};
+    const later = operations.slice(index + 1).filter((o: any) => o.op === 'connect');
+    return { up: later.filter((o: any) => o.target === op.clientId).map((o: any) => resolve(o.source)),
+      down: later.filter((o: any) => o.source === op.clientId).map((o: any) => resolve(o.target)) };
+  }
   /** Reject image parameter values the model's native option lists do not offer. Unlisted keys pass through. */
   function checkImageParams(params: any) {
     const spec = native.modelRegistries?.image?.[params?.model];
@@ -165,7 +207,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
   // native menu to create its default node, then the regular native edit path.
   // Preserve the web application's default mode. Creating a node never submits
   // generation; model changes require a separately identifiable native factory.
-  async function createWebNode(b: any, op: any) {
+  async function createWebNode(b: any, op: any, links: any = {}) {
     writable(b, 'creatable');
     if (!webNodeCreationAvailable() || !['text', 'audio'].includes(op.kind) || op.mode === 'upload' || op.kind === 'audio' && op.data?.src) failure('CAPABILITY_UNAVAILABLE', '当前版本未提供该节点类型的原生创建入口。');
     if (op.data?.params?.model) failure('CAPABILITY_UNAVAILABLE', '网页原生菜单创建仅支持当前默认模型，暂不支持指定模型。');
@@ -195,7 +237,8 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     const data = clean(op.data ?? {});
     if (op.kind === 'audio' && typeof data.prompt === 'string') { data.params = { ...data.params, prompt: data.prompt }; delete data.prompt; }
     const next = { ...created, data: { ...created.data, ...data, ...(data.params ? { params: { ...created.data.params, ...data.params } } : {}) }, selected: false,
-      position: op.position ?? { x: 0, y: 0 }, ...(op.width ? { width: op.width } : {}), ...(op.height ? { height: op.height } : {}) };
+      position: op.position ?? placeNew(b, { ...created, ...(op.width ? { width: op.width } : {}), ...(op.height ? { height: op.height } : {}) }, links),
+      ...(op.width ? { width: op.width } : {}), ...(op.height ? { height: op.height } : {}) };
     b = await changes(b, [{ type: 'replace', id: created.id, item: next }]);
     const actual = node(b, created.id);
     if (JSON.stringify(actual.data) !== JSON.stringify(next.data) || JSON.stringify(actual.position) !== JSON.stringify(next.position)) {
@@ -219,9 +262,10 @@ export function installRuntime(native: any, advancedInstaller?: any) {
             if (op.clientId && aliases.has(op.clientId)) failure('DUPLICATE_CLIENT_ID', '同一批次中的 clientId 不得重复。');
             let n: any;
             if (['text', 'audio'].includes(op.kind) && !(op.kind === 'text' && op.mode === 'generate' ? native.factories.textGenerate : native.factories[op.kind]) && webNodeCreationAvailable()) {
-              const created = await createWebNode(b, op); b = created.b; n = created.node;
+              const created = await createWebNode(b, op, batchLinks(args.operations, index, resolve)); b = created.b; n = created.node;
             } else {
               n = makeNode(b, op);
+              if (!op.position) n.position = placeNew(b, n, batchLinks(args.operations, index, resolve));
               b = await changes(b, [{ type: 'add', item: n }]);
             }
             const actual = node(b, n.id);
@@ -615,6 +659,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     if (!info?.url) failure('UPLOAD_FAILED', '应用未返回上传后的素材 URL。');
     b = bindings(); writable(b, 'creatable');
     const n = makeNode(b, { kind: args.kind, mode: 'upload', position: args.position, data: { title: args.title ?? importedName ?? 'Imported asset', src: info.url, type: 'upload', ...(info.file_id ? { fileId: info.file_id } : {}), ...(info.duration ? { params: { duration: info.duration } } : {}) } });
+    if (!args.position) n.position = placeNew(b, n);
     b = await changes(b, [{ type: 'add', item: n }]); node(b, n.id);
     return { canvasId: b.id, nodeId: n.id, url: info.url, persistence: await flush(b.id) };
   }
