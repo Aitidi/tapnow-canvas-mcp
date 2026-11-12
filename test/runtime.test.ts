@@ -757,3 +757,32 @@ test('0.4.279 草稿容器只读时拒绝写入 @素材', async () => {
   const result = await f.dispatch('promptSet', { canvasId, nodeId: 'generator', segments: [{ type: 'reference', source: 'canvas', nodeId: 'source-one' }] });
   assert.equal(result.error.code, 'PROMPT_EDITOR_UNAVAILABLE');
 });
+
+test('先单独新建、之后另一请求连线时，自动摆放的节点移到上游右侧；已有节点不动', async () => {
+  const source = { id: 'source', type: 'image', position: { x: 3000, y: 3000 }, width: 300, height: 200, data: {} };
+  const f = fixture({ initialNodes: [{ ...source }] });
+  const made = await f.dispatch('edit', { canvasId, operations: [{ op: 'create', clientId: 'n', kind: 'text', data: { text: 'later linked' } }] });
+  const id = made.aliases.n;
+  assert.deepEqual(f.currentNodes().find((n: any) => n.id === id).position, { x: 480, y: 290 });
+  const linked = await f.dispatch('edit', { canvasId, operations: [{ op: 'connect', source: 'source', target: id }] });
+  assert.equal(linked.results[0].ok, true);
+  const byId = new Map(f.currentNodes().map((n: any) => [n.id, n.position]));
+  assert.deepEqual(byId.get(id), { x: 3000 + 300 + 80, y: 3000 });
+  assert.deepEqual(byId.get('source'), source.position);
+});
+
+test('之后连线时，手动移动过或指定过 position 的节点不被移动', async () => {
+  const f = fixture({ initialNodes: [{ id: 'source', type: 'image', position: { x: 3000, y: 3000 }, width: 300, height: 200, data: {} }] });
+  const made = await f.dispatch('edit', { canvasId, operations: [
+    { op: 'create', clientId: 'moved', kind: 'text', data: { text: 'auto then moved' } },
+    { op: 'create', clientId: 'fixed', kind: 'text', data: { text: 'explicit' }, position: { x: 12, y: 34 } },
+  ] });
+  await f.dispatch('edit', { canvasId, operations: [{ op: 'update', nodeId: made.aliases.moved, position: { x: 50, y: 60 } }] });
+  await f.dispatch('edit', { canvasId, operations: [
+    { op: 'connect', source: 'source', target: made.aliases.moved },
+    { op: 'connect', source: 'source', target: made.aliases.fixed },
+  ] });
+  const byId = new Map(f.currentNodes().map((n: any) => [n.id, n.position]));
+  assert.deepEqual(byId.get(made.aliases.moved), { x: 50, y: 60 });
+  assert.deepEqual(byId.get(made.aliases.fixed), { x: 12, y: 34 });
+});

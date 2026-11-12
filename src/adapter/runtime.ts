@@ -171,6 +171,21 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     }
     return { x: Math.round(x), y: Math.round(y) };
   }
+  // Nodes this runtime placed automatically, with the position it gave them. Only these may be moved again.
+  const autoPlaced = new Map<string, { x: number; y: number }>();
+  /** A node placed without links (e.g. links added later by promptSet) moves next to its new neighbours, unless the user has moved it. */
+  async function followLinks(b: any, id: string) {
+    const placed = autoPlaced.get(id), n = nodes(b).find((x: any) => x.id === id);
+    if (!placed || !n || n.parentId || Math.round(n.position.x) !== placed.x || Math.round(n.position.y) !== placed.y) return b;
+    const links = { up: edges(b).filter((e: any) => e.target === id).map((e: any) => e.source), down: edges(b).filter((e: any) => e.source === id).map((e: any) => e.target) };
+    if (!links.up.length && !links.down.length) return b;
+    const position = placeNew(b, n, links);
+    if (position.x === placed.x && position.y === placed.y) return b;
+    b = await changes(b, [{ id, type: 'position', position, dragging: false }]);
+    const moved = nodes(b).find((x: any) => x.id === id);
+    if (moved && Math.round(moved.position.x) === position.x && Math.round(moved.position.y) === position.y) autoPlaced.set(id, position); else autoPlaced.delete(id);
+    return b;
+  }
   /** Connections later in the same batch that name this create's clientId. */
   function batchLinks(operations: any[], index: number, resolve: (id: string) => string) {
     const op = operations[index];
@@ -257,6 +272,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
       ...(op.width ? { width: op.width } : {}), ...(op.height ? { height: op.height } : {}) };
     b = await changes(b, [{ type: 'replace', id: created.id, item: next }]);
     const actual = node(b, created.id);
+    if (!op.position) autoPlaced.set(actual.id, { x: Math.round(actual.position.x), y: Math.round(actual.position.y) });
     if (JSON.stringify(actual.data) !== JSON.stringify(next.data) || JSON.stringify(actual.position) !== JSON.stringify(next.position)) {
       failure('EDIT_REJECTED', '已创建原生节点，但应用未接受后续配置。', { createdNodeId: created.id });
     }
@@ -283,6 +299,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
               n = makeNode(b, op);
               if (!op.position) n.position = placeNew(b, n, batchLinks(args.operations, index, resolve));
               b = await changes(b, [{ type: 'add', item: n }]);
+              if (!op.position) autoPlaced.set(n.id, { x: Math.round(n.position.x), y: Math.round(n.position.y) });
             }
             const actual = node(b, n.id);
             if (op.clientId) aliases.set(op.clientId, n.id);
@@ -337,6 +354,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
             b.props.onConnect(connection); b = await settle(b.id);
             const e = edges(b).find((e: any) => e.source === connection.source && e.target === connection.target);
             if (!e) failure('CONNECTION_REJECTED', '应用未创建连线。');
+            b = await followLinks(b, connection.target); b = await followLinks(b, connection.source);
             result = { edgeId: e.id }; break;
           }
           case 'disconnect': {
@@ -697,6 +715,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     const n = makeNode(b, { kind: args.kind, mode: 'upload', position: args.position, data: { title: args.title ?? importedName ?? 'Imported asset', src: info.url, type: 'upload', ...(info.file_id ? { fileId: info.file_id } : {}), ...(info.duration ? { params: { duration: info.duration } } : {}) } });
     if (!args.position) n.position = placeNew(b, n);
     b = await changes(b, [{ type: 'add', item: n }]); node(b, n.id);
+    if (!args.position) autoPlaced.set(n.id, { x: Math.round(n.position.x), y: Math.round(n.position.y) });
     return { canvasId: b.id, nodeId: n.id, url: info.url, persistence: await flush(b.id) };
   }
   const advanced=typeof advancedInstaller==='function'?advancedInstaller(native,{guard,bindings,node,nodes,edges,writable,changes,makeNode,runEdit,flush,snapshot,pause,prepareGeneration,generationPanel}):{};
