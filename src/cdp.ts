@@ -11,7 +11,9 @@ export function isTapnowTarget(value: string, mode: 'desktop' | 'web') {
     const url = new URL(value);
     if (url.username || url.password) return false;
     return mode === 'desktop' ? url.protocol === 'tapnow:' && url.host === 'app'
-      : url.origin === 'https://app.tapnow.ai' && /^\/canvas\/[0-9a-f-]{36}\/?$/i.test(url.pathname);
+      : url.origin === 'https://app.tapnow.ai' && (/^\/canvas\/[0-9a-f-]{36}\/?$/i.test(url.pathname) ||
+        // Project workspace route: /p/<project>?c=<canvas>.
+        /^\/p\/[0-9a-f-]{36}\/?$/i.test(url.pathname) && /^[0-9a-f-]{36}$/i.test(url.searchParams.get('c') ?? ''));
   } catch { return false; }
 }
 

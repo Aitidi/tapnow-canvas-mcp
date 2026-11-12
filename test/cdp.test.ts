@@ -204,6 +204,9 @@ test('网页模式仅接受官方 HTTPS 画布，默认桌面模式不附着网�
   const canvas = 'https://app.tapnow.ai/canvas/f45bf063-e173-4ebb-bcdc-b5c70c60f464';
   assert.equal(isTapnowTarget(canvas, 'web'), true);
   assert.equal(isTapnowTarget(canvas, 'desktop'), false);
+  const project = 'https://app.tapnow.ai/p/bb926a8f-55b4-4bcb-a15b-dab890206062?c=c00b6fe3-09d8-4cf4-b0de-dea5911556f4';
+  assert.equal(isTapnowTarget(project, 'web'), true);
+  for (const url of [project.split('?')[0], project.replace('?c=', '?c=x'), project.replace('/p/', '/q/')]) assert.equal(isTapnowTarget(url, 'web'), false, url);
   for (const url of [canvas.replace('https:', 'http:'), canvas.replace('app.tapnow.ai', 'app.tapnow.ai.evil'),
     canvas.replace('app.tapnow.ai', 'user:secret@app.tapnow.ai'), canvas.replace('app.tapnow.ai', 'app.tapnow.ai:444'),
     'https://app.tapnow.ai/home', 'https://app.tapnow.ai/canvas/broken', 'tapnow://app/canvas/test']) {

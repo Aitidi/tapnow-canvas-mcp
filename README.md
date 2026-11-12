@@ -71,7 +71,7 @@ npm run diagnose
 
 ### 3. 准备网页端（只用 APP 端可跳过）
 
-网页端只识别 `https://app.tapnow.ai/canvas/<画布 UUID>`，需要 Chrome 144 或更新版本，无需重启浏览器：
+网页端识别项目工作区地址 `https://app.tapnow.ai/p/<项目 UUID>?c=<画布 UUID>`（旧版 `https://app.tapnow.ai/canvas/<画布 UUID>` 仍兼容），需要 Chrome 144 或更新版本，无需重启浏览器：
 
 1. 打开 `chrome://inspect/#remote-debugging`，启用远程调试。
 2. 登录 Tapnow，打开一个目标网页画布。

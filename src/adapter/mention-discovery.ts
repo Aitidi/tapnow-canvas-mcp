@@ -11,7 +11,7 @@ export async function discoverMentionNative(nativeModuleUrls: string[] = []): Pr
         if (url.username || url.password || url.search || url.hash) return false;
         const legacy = url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
           /^\/assets\/UnlimitedModeToggle-[^/]+\.js$/.test(url.pathname);
-        const desktop = base.protocol === 'tapnow:' && url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
+        const desktop = ((base.protocol === 'tapnow:' && base.host === 'app') || base.origin === 'https://app.tapnow.ai') && url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname &&
           /^\/assets\/(?:vendor-pkg-endpoints|shell-canvas|vendor-pkg-canvas-v2)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
         const web = base.origin === 'https://app.tapnow.ai' && url.origin === 'https://fe-assets.tapnow.media' &&
           /^\/[a-f0-9]{40}\/assets\/(?:vendor-pkg-canvas|vendor-packages)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
@@ -38,15 +38,15 @@ export async function discoverMentionNative(nativeModuleUrls: string[] = []): Pr
       if (src && /\.nodeType/.test(src) && /\.nodeId/.test(src) && /\.assetId/.test(src) &&
         /nodeName:/.test(src) && /mediaSrc:/.test(src) && /previewImage:/.test(src) &&
         /durationMs:/.test(src) && /official:/.test(src) && /return null/.test(src)) parser ??= value;
-      if (src && /\.indexOf\(["']\{\{Asset:/.test(src) && /\.endIndex/.test(src) &&
+      if (src && /\.indexOf\(["'`]\{\{Asset:/.test(src) && /\.endIndex/.test(src) &&
         /\.content/.test(src) && /\.push\(/.test(src) && /return\[\]/.test(src) &&
         !/images:|videos:|audios:/.test(src)) tokenParser ??= value;
       if (src && /allowedNodeTypes/.test(src) && /allowLegacyNodePayload/.test(src) &&
-        /\.indexOf\(["']\{\{Asset:/.test(src) && /\.mediaSrc/.test(src) &&
+        /\.indexOf\(["'`]\{\{Asset:/.test(src) && /\.mediaSrc/.test(src) &&
         /images:/.test(src) && /videos:/.test(src) && /audios:/.test(src)) expander ??= value;
       if (src && /\.asset_type/.test(src) && /\.compliance_status/.test(src) &&
         /\.\.\.[\w$]+,asset_type:/.test(src) && /compliance_status:/.test(src) && !/metadata|\.asset\b/.test(src)) normalizeAsset ??= value;
-      if (src && /typeof [\w$]+\.content={2,3}["']string["']/.test(src) && /\.metadata/.test(src) &&
+      if (src && /typeof [\w$]+\.content={2,3}["'`]string["'`]/.test(src) && /\.metadata/.test(src) &&
         /\.fields/.test(src) && /\.source_url/.test(src) && /\.thumbnail_url/.test(src) && /\.name/.test(src)) textContent ??= value;
       if (value && typeof value === 'object') {
         const search = ownFunction(value, 'searchAssets');

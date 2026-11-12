@@ -1,14 +1,15 @@
 import type { CdpConnection } from '../cdp.js';
+import { findCanvasBundles } from './bundle-lookup.js';
 
 /** Only native constructors and mention helpers; never transfer arbitrary scope state. */
 export function isScopedNativeFunction(source: string) {
   const factory = /return\s*\{id:/.test(source) && /position:/.test(source) &&
-    /title:(?:["'](?:Text|Audio|Upload Audio)["']|[\w$]+\(["'](?:text|audio|uploadAudio)["']\))/.test(source) && /\.(?:PURE|GENERATE|AUDIO|UPLOAD)/.test(source);
+    /title:(?:["'`](?:Text|Audio|Upload Audio)["'`]|[\w$]+\(["'`](?:text|audio|uploadAudio)["'`]\))/.test(source) && /\.(?:PURE|GENERATE|AUDIO|UPLOAD)/.test(source);
   const parser = /\.nodeType/.test(source) && /\.nodeId/.test(source) && /\.assetId/.test(source) && /nodeName:/.test(source) && /mediaSrc:/.test(source) && /return null/.test(source);
-  const tokens = /\.indexOf\(["']\{\{Asset:/.test(source) && /\.endIndex/.test(source) && /\.content/.test(source) && /\.push\(/.test(source) && /return\[\]/.test(source) && !/images:|videos:|audios:/.test(source);
-  const expand = /allowedNodeTypes/.test(source) && /allowLegacyNodePayload/.test(source) && /\.indexOf\(["']\{\{Asset:/.test(source) && /images:/.test(source) && /videos:/.test(source) && /audios:/.test(source);
+  const tokens = /\.indexOf\(["'`]\{\{Asset:/.test(source) && /\.endIndex/.test(source) && /\.content/.test(source) && /\.push\(/.test(source) && /return\[\]/.test(source) && !/images:|videos:|audios:/.test(source);
+  const expand = /allowedNodeTypes/.test(source) && /allowLegacyNodePayload/.test(source) && /\.indexOf\(["'`]\{\{Asset:/.test(source) && /images:/.test(source) && /videos:/.test(source) && /audios:/.test(source);
   const normalize = /\.asset_type/.test(source) && /\.compliance_status/.test(source) && /\.\.\.[\w$]+,asset_type:/.test(source) && /compliance_status:/.test(source) && !/metadata|\.asset\b/.test(source);
-  const text = /typeof [\w$]+\.content={2,3}["']string["']/.test(source) && /\.metadata/.test(source) && /\.fields/.test(source) && /\.source_url/.test(source) && /\.thumbnail_url/.test(source) && /\.name/.test(source);
+  const text = /typeof [\w$]+\.content={2,3}["'`]string["'`]/.test(source) && /\.metadata/.test(source) && /\.fields/.test(source) && /\.source_url/.test(source) && /\.thumbnail_url/.test(source) && /\.name/.test(source);
   const history = /rawGenerationParams:/.test(source) && /sourceFileIds:/.test(source) && /\.resources\.map\(/.test(source) && /createdAt:/.test(source);
   const elementFormat = /\{id:[\w$]+\.element_id,label:[\w$]+\.alias\}/.test(source);
   const elementParse = /element_id:[\w$]+\.id,alias:[\w$]+\.label/.test(source) && /:null/.test(source);
@@ -26,7 +27,7 @@ export async function collectScopedNative(cdp: CdpConnection) {
   await cdp.evaluate('delete globalThis.__tapnowCanvasMcpScopedNative');
   try {
     const functionReply = await cdp.send('Runtime.evaluate', {
-      expression: `(async()=>{if(location.protocol==='tapnow:'&&location.host==='app'){const entry=[...document.scripts].map(s=>s.src).find(value=>{try{const u=new URL(value);return u.protocol==='tapnow:'&&u.host==='app'&&!u.search&&!u.hash&&/^\\/assets\\/main-[A-Za-z0-9_-]{8}\\.js$/.test(u.pathname);}catch{return false;}});if(!entry)return null;const names=[...new Set((await (await fetch(entry)).text()).match(/\\.\\/vendor-pkg-canvas-v2-[A-Za-z0-9_-]{8}\\.js/g)??[])];if(names.length!==1)return null;const module=await import(new URL(names[0],entry).href);return Object.values(module).find(value=>typeof value==='function'&&(${isScopedNativeFunction.toString()})(Function.prototype.toString.call(value)))??Object.values(module).find(value=>typeof value==='function')??null;}if(location.origin!=='https://app.tapnow.ai')return null;const urls=[...document.scripts].map(s=>s.src).concat([...document.querySelectorAll('link[rel="modulepreload"]')].map(l=>l.href));const url=urls.find(value=>{try{const u=new URL(value);return u.origin==='https://fe-assets.tapnow.media'&&!u.username&&!u.password&&!u.search&&!u.hash&&/^\\/[a-f0-9]{40}\\/assets\\/vendor-pkg-canvas-[A-Za-z0-9_-]{8}\\.js$/.test(u.pathname);}catch{return false;}});if(!url)return null;const module=await import(url);return Object.values(module).find(value=>typeof value==='function'&&(${isScopedNativeFunction.toString()})(Function.prototype.toString.call(value)))??Object.values(module).find(value=>typeof value==='function')??null;})()`,
+      expression: `(async()=>{const __name=(value)=>value;const names=await (${findCanvasBundles.toString()})(false);if(names.length===1){const module=await import(names[0]);return Object.values(module).find(value=>typeof value==='function'&&(${isScopedNativeFunction.toString()})(Function.prototype.toString.call(value)))??Object.values(module).find(value=>typeof value==='function')??null;}if(location.origin!=='https://app.tapnow.ai')return null;const urls=[...document.scripts].map(s=>s.src).concat([...document.querySelectorAll('link[rel="modulepreload"]')].map(l=>l.href));const url=urls.find(value=>{try{const u=new URL(value);return u.origin==='https://fe-assets.tapnow.media'&&!u.username&&!u.password&&!u.search&&!u.hash&&/^\\/[a-f0-9]{40}\\/assets\\/vendor-pkg-canvas-[A-Za-z0-9_-]{8}\\.js$/.test(u.pathname);}catch{return false;}});if(!url)return null;const module=await import(url);return Object.values(module).find(value=>typeof value==='function'&&(${isScopedNativeFunction.toString()})(Function.prototype.toString.call(value)))??Object.values(module).find(value=>typeof value==='function')??null;})()`,
       awaitPromise: true, objectGroup: group,
     });
     if (!functionReply.result?.objectId || functionReply.exceptionDetails) return { available: false, functions: 0 };

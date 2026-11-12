@@ -1,15 +1,16 @@
 import type { CdpConnection } from '../cdp.js';
+import { findCanvasBundles } from './bundle-lookup.js';
 
 /** Inspect only the Map named by a recognized official per-canvas flush function.
  * Never read queue entries, transfer state, flush every canvas, or retry a failed save.
  */
 export async function collectPersistenceNative(cdp: CdpConnection) {
   const group = 'tapnow-persistence-discovery';
-  const signature = '^([\\w$]+)\\s*=>\\s*([\\w$]+)\\.get\\(\\1\\)\\?\\.flush\\(\\)\\?\\?Promise\\.resolve\\(["\u0027]failed["\u0027]\\)$';
+  const signature = '^([\\w$]+)\\s*=>\\s*([\\w$]+)\\.get\\(\\1\\)\\?\\.flush\\(\\)\\?\\?Promise\\.resolve\\(["\u0027\u0060]failed["\u0027\u0060]\\)$';
   await cdp.evaluate('delete globalThis.__tapnowCanvasMcpPersistence');
   try {
     const reply = await cdp.send('Runtime.evaluate', {
-      expression: `(async()=>{if(location.protocol!=='tapnow:'||location.host!=='app')return[];const entry=[...document.scripts].map(s=>s.src).find(s=>/^tapnow:\\/\\/app\\/assets\\/main-[A-Za-z0-9_-]{8}\\.js$/.test(s));if(!entry)return[];const text=await(await fetch(entry)).text();const names=[...new Set(text.match(/\\.\\/vendor-pkg-canvas(?:-v2)?-[A-Za-z0-9_-]{8}\\.js/g)??[])];const found=[];for(const name of names){const m=await import(new URL(name,entry).href);for(const value of Object.values(m))if(typeof value==='function'&&new RegExp(${JSON.stringify(signature)}).test(Function.prototype.toString.call(value)))found.push(value);}return [...new Set(found)];})()`,
+      expression: `(async()=>{const __name=(value)=>value;const names=await (${findCanvasBundles.toString()})(true);const found=[];for(const name of names){const m=await import(name);for(const value of Object.values(m))if(typeof value==='function'&&new RegExp(${JSON.stringify(signature)}).test(Function.prototype.toString.call(value)))found.push(value);}return [...new Set(found)];})()`,
       awaitPromise: true, objectGroup: group,
     });
     if (reply.exceptionDetails || !reply.result?.objectId) return { functions: 0 };

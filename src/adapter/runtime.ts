@@ -68,7 +68,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
           const src = Function.prototype.toString.call(s[0]);
           if (/^\(\)\s*=>/.test(src) && /\.flush\(\)/.test(src)) {
             if (f.memoizedProps.isCollaborationEnabled === true && /nodeChanges:/.test(src) && /edgeChanges:/.test(src) && /nextState:/.test(src)) {
-              for (const direction of ['undo', 'redo']) if (new RegExp('["\u0027]' + direction + '["\u0027]').test(src)) history[direction].push(s[0]);
+              for (const direction of ['undo', 'redo']) if (new RegExp('["\u0027\u0060]' + direction + '["\u0027\u0060]').test(src)) history[direction].push(s[0]);
             } else if (f.memoizedProps.isCollaborationEnabled !== true && /\.current\[[\w$]+\]\?\.state/.test(src)) {
               if (/if\([\w$]+<=0\)return null/.test(src)) history.undo.push(s[0]);
               if (/if\([\w$]+>=[\w$]+\.current\.length-1\)return null/.test(src)) history.redo.push(s[0]);

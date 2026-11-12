@@ -11,6 +11,7 @@ import { discoverMentionNative } from './adapter/mention-discovery.js';
 import { collectScopedNative, isScopedNativeFunction } from './adapter/scoped-native.js';
 import { downloadNodes } from './download.js';
 import { collectPersistenceNative } from './adapter/persistence-native.js';
+import { collectModuleHints, findCanvasBundles } from './adapter/bundle-lookup.js';
 import { createAdvancedHandlers } from './adapter/advanced.js';
 import {controlQueue} from './generation-queue.js';
 
@@ -47,7 +48,7 @@ export class TapnowService {
     const savePolicy = options.savePolicy ?? process.env.TAPNOW_SAVE_POLICY ?? 'native';
     if (!['native', 'disabled'].includes(savePolicy)) throw new TapnowError('INVALID_ARGUMENT', 'TAPNOW_SAVE_POLICY 必须为 native 或 disabled。');
     this.savePolicy = savePolicy as 'native' | 'disabled';
-    this.runtimeFingerprint = digest([discoverNativeModules.toString(), discoverMentionNative.toString(), installRuntime.toString(), createAdvancedHandlers.toString(), collectScopedNative.toString(), isScopedNativeFunction.toString(), collectPersistenceNative.toString(), this.savePolicy]);
+    this.runtimeFingerprint = digest([discoverNativeModules.toString(), discoverMentionNative.toString(), installRuntime.toString(), createAdvancedHandlers.toString(), collectScopedNative.toString(), isScopedNativeFunction.toString(), collectPersistenceNative.toString(), findCanvasBundles.toString(), collectModuleHints.toString(), this.savePolicy]);
     this.cdp = new CdpConnection(options.endpoint, options);
     this.stateDir = options.stateDir ?? process.env.TAPNOW_STATE_DIR ?? fileURLToPath(new URL('../.tapnow-mcp/', import.meta.url));
     this.journal = new RequestJournal(join(this.stateDir, 'requests'), this.cdp.endpoint);
@@ -65,11 +66,12 @@ export class TapnowService {
     const moduleSignature = `JSON.stringify([...new Set([...document.scripts].map(s=>s.src).concat([...document.querySelectorAll('link[rel="modulepreload"]')].map(l=>l.href)))].filter(u=>/\\/assets\\/(?:index|main|UnlimitedModeToggle|course-api-base-url|group|vendor-pkg-canvas|vendor-packages)-[^/]+\\.js$/.test(u)).sort())`;
     const same = await this.cdp.evaluate(`globalThis.__tapnowCanvasMcp?.fingerprint === ${JSON.stringify(this.runtimeFingerprint)} && globalThis.__tapnowCanvasMcp?.moduleSignature === ${moduleSignature}`);
     if (!same) {
+      await collectModuleHints(this.cdp);
       await collectScopedNative(this.cdp);
       try {
         await collectPersistenceNative(this.cdp);
         await this.cdp.evaluate(`(async()=>{ const __name=(value)=>value; const native=await (${discoverNativeModules.toString()})(); native.savePolicy=${JSON.stringify(this.savePolicy)}; try { native.mentions=await (${discoverMentionNative.toString()})(native.moduleUrls); } catch(e) { native.mentionError={code:e.code??'UNSUPPORTED_VERSION',message:e.message}; } delete globalThis.__tapnowCanvasMcp; (${installRuntime.toString()})(native,(${createAdvancedHandlers.toString()})); globalThis.__tapnowCanvasMcp.fingerprint=${JSON.stringify(this.runtimeFingerprint)}; globalThis.__tapnowCanvasMcp.moduleSignature=${moduleSignature}; return true; })()`);
-      } finally { await this.cdp.evaluate('delete globalThis.__tapnowCanvasMcpScopedNative; delete globalThis.__tapnowCanvasMcpPersistence').catch(() => {}); }
+      } finally { await this.cdp.evaluate('delete globalThis.__tapnowCanvasMcpScopedNative; delete globalThis.__tapnowCanvasMcpPersistence; delete globalThis.__tapnowCanvasMcpModuleHints').catch(() => {}); }
     }
   }
   private async invoke(action: string, args: any = {}, timeout = 20000): Promise<any> {
@@ -222,8 +224,12 @@ export class TapnowService {
     if((destination.canvas?.id??destination.id)!==destinationCanvasId)throw new TapnowError('CANVAS_NOT_FOUND','目标画布不存在或无法读取。');
     const saved=await this.invoke('save',{canvasId:sourceCanvasId});
     if(saved.persistence?.confirmed!==true)throw new TapnowError('SAVE_NOT_CONFIRMED','源画布未确认保存，停止切换。');
-    const current=await this.cdp.evaluate('location.href');const origin=new URL(current);
-    const url=origin.protocol==='tapnow:'?'tapnow://app/canvas/'+destinationCanvasId:origin.origin+'/canvas/'+destinationCanvasId;
+    const current=new URL(await this.cdp.evaluate('location.href'));
+    const base=current.protocol==='tapnow:'?'tapnow://app':current.origin;
+    // Project workspaces route /p/<project>?c=<canvas>; the web app sends /canvas/<id> to the project list.
+    const record=destination.canvas??destination;
+    const project=[record.project_id,record.projectId,/^\/p\/([0-9a-f-]{36})\/?$/i.exec(current.pathname)?.[1]].find(v=>typeof v==='string'&&/^[0-9a-f-]{36}$/i.test(v));
+    const url=project?`${base}/p/${project}?c=${destinationCanvasId}`:`${base}/canvas/${destinationCanvasId}`;
     await this.cdp.send('Page.navigate',{url});
     const started=Date.now();let last:any;
     while(Date.now()-started<20000){try{await this.ready();const state=await this.invoke('inspect',{includeData:false});if(state.canvasId===destinationCanvasId)return state;}catch(e){last=e;}await pause(200);}

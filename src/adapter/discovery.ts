@@ -6,14 +6,20 @@
 export async function discoverNativeModules(): Promise<any> {
   const doc = (globalThis as any).document;
   const base = new URL((globalThis as any).location.href);
+  const hints = (globalThis as any).__tapnowCanvasMcpModuleHints;
   const candidates = [...Array.from(doc.scripts, (element: any) => element.src),
-    ...Array.from(doc.querySelectorAll('link[rel="modulepreload"]'), (element: any) => element.href)];
+    ...Array.from(doc.querySelectorAll('link[rel="modulepreload"]'), (element: any) => element.href),
+    // Lazily imported bundles appear only among loaded resources (CDP hints, resource timing).
+    ...Array.isArray(hints) ? hints : [],
+    ...((globalThis as any).performance?.getEntriesByType?.('resource') ?? []).map((entry: any) => entry.name)];
   const sameApp = (url: any) => url.origin === base.origin && url.protocol === base.protocol && url.hostname === base.hostname;
+  // Desktop (tapnow://app) and the current web app (https://app.tapnow.ai) share one same-origin Vite build.
+  const appShell = (base.protocol === 'tapnow:' && base.host === 'app') || base.origin === 'https://app.tapnow.ai';
   // 0.4.15x desktop loads the canvas bundle lazily, so it is only named in the entry's import map.
   for (const value of Array.from(doc.scripts, (element: any) => element.src)) {
     try {
       const url = new URL(value as string, base.href);
-      if (base.protocol !== 'tapnow:' || !sameApp(url) || url.search || url.hash || !/^\/assets\/main-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname)) continue;
+      if (!appShell || !sameApp(url) || url.search || url.hash || !/^\/assets\/main-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname)) continue;
       const text = await (await fetch(url.href)).text();
       for (const match of new Set(text.match(/\.\/vendor-pkg-canvas-v2-[A-Za-z0-9_-]{8}\.js/g) ?? [])) candidates.push(new URL(match, url.href).href);
     } catch { /* The legacy and preload candidates still apply. */ }
@@ -27,7 +33,7 @@ export async function discoverNativeModules(): Promise<any> {
         if (url.username || url.password || url.search || url.hash) return false;
         const legacy = sameApp(url) &&
           /^\/assets\/(?:index|UnlimitedModeToggle|course-api-base-url|group)-[^/]+\.js$/.test(url.pathname);
-        const desktop = base.protocol === 'tapnow:' && sameApp(url) &&
+        const desktop = appShell && sameApp(url) &&
           /^\/assets\/(?:vendor-pkg-canvas-v2|vendor-pkg-endpoints|vendor-pkg-tap-models|shell-canvas)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
         const web = base.origin === 'https://app.tapnow.ai' && url.origin === 'https://fe-assets.tapnow.media' &&
           /^\/[a-f0-9]{40}\/assets\/(?:vendor-pkg-canvas|vendor-packages)-[A-Za-z0-9_-]{8}\.js$/.test(url.pathname);
@@ -76,13 +82,13 @@ export async function discoverNativeModules(): Promise<any> {
           // Workflow groups use an implicit object return and a direct position
           // argument instead of the regular node constructor's options object.
           if (/=>\s*\(\{id:/.test(src) && /type:[\w$]+\.GROUP,/.test(src) &&
-            /data:\{createdBy:["']client["']/.test(src) && /position:/.test(src)) {
+            /data:\{createdBy:["'`]client["'`]/.test(src) && /position:/.test(src)) {
             factories.group ??= (data: any = {}, options: any = {}) => ({ ...value(data, options.position ?? { x: 0, y: 0 }), ...options });
           }
           // Every accepted constructor must produce a native canvas-node shape.
           if (/return\s*\{id:/.test(src) && /position:/.test(src)) {
             // 0.4.25x localizes default titles: title:yi("uploadImage") instead of a literal.
-            const titleMatch = /title:\s*(?:["']([^"']+)["']|[\w$]+\(["']([\w.]+)["']\))/.exec(src);
+            const titleMatch = /title:\s*(?:["'`]([^"'`]+)["'`]|[\w$]+\(["'`]([\w.]+)["'`]\))/.exec(src);
             const localizedTitles = new Map([['text', 'Text'], ['image', 'Image'], ['video', 'Video'], ['audio', 'Audio'],
               ['uploadImage', 'Upload Image'], ['uploadVideo', 'Upload Video'], ['uploadAudio', 'Upload Audio'], ['group', 'Group']]);
             const title = titleMatch?.[1] ?? localizedTitles.get(titleMatch?.[2] ?? '');
@@ -94,10 +100,10 @@ export async function discoverNativeModules(): Promise<any> {
             else if (title === 'Upload Video' && /\.UPLOAD/.test(src)) factories.videoUpload ??= wrapFactory(value);
             else if (title === 'Upload Audio' && /\.UPLOAD/.test(src)) factories.audioUpload ??= wrapFactory(value);
             else if (title === 'Audio' && /\.AUDIO/.test(src)) factories.audio ??= wrapFactory(value, true);
-            else if (title === 'Group' && /(?:\.GROUP|["']group["'])/.test(src)) factories.group ??= wrapFactory(value);
+            else if (title === 'Group' && /(?:\.GROUP|["'`]group["'`])/.test(src)) factories.group ??= wrapFactory(value);
           }
           // Intentionally narrow: never confuse owner-release functions with flush.
-          if (/^[\w$]+\s*=>\s*[\w$]+\.get\([\w$]+\)\?\.flush\(\)\?\?Promise\.resolve\(["']failed["']\)$/.test(src)) flush ??= value;
+          if (/^[\w$]+\s*=>\s*[\w$]+\.get\([\w$]+\)\?\.flush\(\)\?\?Promise\.resolve\(["'`]failed["'`]\)$/.test(src)) flush ??= value;
           // Read only explicitly-owned Zustand API methods, never synthetic proxies.
           if (hasOwnMethod(value, 'getState') && hasOwnMethod(value, 'setState') && hasOwnMethod(value, 'subscribe')) {
             const state = value.getState();
@@ -166,7 +172,7 @@ export async function discoverNativeModules(): Promise<any> {
     }
   }
   if (audioModels.size) modelRegistries.audio = [...audioModels.values()];
-  const persistence = base.protocol === 'tapnow:' ? (globalThis as any).__tapnowCanvasMcpPersistence : undefined;
+  const persistence = appShell ? (globalThis as any).__tapnowCanvasMcpPersistence : undefined;
   if (Array.isArray(persistence) && persistence.length) {
     flush = async (canvasId:string) => {
       const matches = persistence.filter(p => typeof p.registered === 'function' && typeof p.flush === 'function' && p.registered(canvasId));
