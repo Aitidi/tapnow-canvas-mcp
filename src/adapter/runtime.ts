@@ -15,18 +15,21 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     const current = route();
     if (current !== id) failure('CANVAS_CHANGED', '当前画布已切换，已停止旧画布请求。', { expected: id, actual: current });
   };
-  function fibers() {
-    const element = document.getElementById('root') as any;
-    const key = element && Object.keys(element).find(k => k.startsWith('__reactContainer$'));
-    const container = key && element[key];
-    const root = container?.stateNode?.current;
-    if (!root) failure('UNSUPPORTED_VERSION', '未找到当前 React 画布根节点。');
+  /** Fibers in depth-first order (ancestors before descendants); from `start` only its own subtree. */
+  function fibers(start?: any) {
+    let root = start;
+    if (!root) {
+      const element = document.getElementById('root') as any;
+      const key = element && Object.keys(element).find(k => k.startsWith('__reactContainer$'));
+      root = key && element[key]?.stateNode?.current;
+      if (!root) failure('UNSUPPORTED_VERSION', '未找到当前 React 画布根节点。');
+    }
     const all: any[] = [], stack = [root], seen = new Set();
-    while (stack.length && all.length < 60000) {
+    while (stack.length && all.length < 80000) {
       const f = stack.pop();
       if (!f || seen.has(f)) continue;
       seen.add(f); all.push(f);
-      if (f.sibling) stack.push(f.sibling);
+      if (f.sibling && f !== start) stack.push(f.sibling);
       if (f.child) stack.push(f.child);
     }
     return all;
@@ -34,13 +37,26 @@ export function installRuntime(native: any, advancedInstaller?: any) {
   function bindings() {
     const id = route();
     const all = fibers();
-    const props = all.map(f => f.memoizedProps).find(p => p?.['data-keyboard-scope'] === 'canvas' && p.nodeTypes && typeof p.onNodesChange === 'function');
     let store: any, flow: any, viewport: any, pile: any, host: any;
     const history: Record<string, any[]> = { undo: [], redo: [] };
-    const owners = all.map(f => f.memoizedProps).filter(p => p?.canvasId && Array.isArray(p.nodes) && Array.isArray(p.edges));
-    if (!owners.some(p => p.canvasId === id) || owners.some(p => p.canvasId !== id)) failure('CANVAS_NOT_READY', '画布正在切换或加载，请等画布显示后重新读取。');
+    const owners = all.filter(f => { const p = f.memoizedProps; return p?.canvasId && Array.isArray(p.nodes) && Array.isArray(p.edges); });
+    const own = owners.filter(f => f.memoizedProps.canvasId === id), others = owners.filter(f => f.memoizedProps.canvasId !== id);
+    // 0.4.279 keeps previously opened canvases mounted but inactive. Only some of a canvas's owner layers
+    // carry `active`, so a canvas is inactive when a layer says false and none says true. Any other canvas
+    // not marked inactive, or our own marked inactive, means the workspace is mid-switch.
+    const inactive = (list: any[]) => list.some(f => f.memoizedProps.active === false) && !list.some(f => f.memoizedProps.active === true);
+    const otherIds = [...new Set(others.map(f => f.memoizedProps.canvasId))];
+    if (!own.length || inactive(own) || otherIds.some(other => !inactive(others.filter(f => f.memoizedProps.canvasId === other)))) {
+      failure('CANVAS_NOT_READY', '画布正在切换或加载，请等画布显示后重新读取。');
+    }
+    // Search only the current canvas's subtree, so a hidden canvas's editing APIs can never be picked.
+    // Builds that mount a single canvas may keep its providers above the owner; fall back to the page there.
+    const subtree = fibers(own[0]);
+    const scoped = (list: any[]) => list.some(f => { const p = f.memoizedProps; return p?.['data-keyboard-scope'] === 'canvas' && p.nodeTypes && typeof p.onNodesChange === 'function'; });
+    const scope = others.length || scoped(subtree) ? subtree : all;
+    const props = scope.map(f => f.memoizedProps).find(p => p?.['data-keyboard-scope'] === 'canvas' && p.nodeTypes && typeof p.onNodesChange === 'function');
     const candidates: any[] = [];
-    for (const f of all) {
+    for (const f of scope) {
       const value = f.memoizedProps?.value;
       if (value && (typeof value === 'object' || typeof value === 'function')) candidates.push(value);
       if (f.memoizedProps?.canvasId === id && typeof f.memoizedProps?.isCanvasCreator === 'boolean') host = f.memoizedProps;
@@ -416,13 +432,14 @@ export function installRuntime(native: any, advancedInstaller?: any) {
   }
   function promptEditor(b: any, nodeId: string) {
     const matches: any[] = [], refs = new Set();
-    for (const owner of b.all.filter((f: any) => f.memoizedProps?.nodeId === nodeId && typeof f.memoizedProps?.onPromptChange === 'function')) {
+    // 0.4.279 replaced onPromptChange with a draft container (onDraftChange) around the same tiptap editor.
+    for (const owner of b.all.filter((f: any) => f.memoizedProps?.nodeId === nodeId && (typeof f.memoizedProps?.onPromptChange === 'function' || typeof f.memoizedProps?.onDraftChange === 'function'))) {
       const stack = [owner.child];
       while (stack.length) {
         const f = stack.pop(); if (!f) continue;
         const p = f.memoizedProps;
         if (Array.isArray(p?.mentionItems) && p.tiptapRef?.current && typeof p.tiptapRef.current.getMentionIds === 'function' && !refs.has(p.tiptapRef)) {
-          refs.add(p.tiptapRef); matches.push({ owner: owner.memoizedProps, items: p.mentionItems, ref: p.tiptapRef.current, readonly: !!(owner.memoizedProps.isReadonly || owner.memoizedProps.promptReadOnly || p.isReadonly) });
+          refs.add(p.tiptapRef); matches.push({ owner: owner.memoizedProps, items: p.mentionItems, ref: p.tiptapRef.current, readonly: !!(owner.memoizedProps.isReadonly || owner.memoizedProps.promptReadOnly || owner.memoizedProps.writable === false || p.isReadonly), write: (prompt: string) => (owner.memoizedProps.onPromptChange ?? owner.memoizedProps.onDraftChange)(prompt) });
         }
         if (f.sibling) stack.push(f.sibling); if (f.child) stack.push(f.child);
       }
@@ -527,7 +544,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     const current = node(b, args.nodeId);
     const data = current.type === 'audio' ? { ...current.data, params: { ...current.data.params, prompt } } : { ...current.data, prompt };
     // Keep the mounted editor's native draft and the persistent graph in agreement.
-    editor.owner.onPromptChange(prompt);
+    editor.write(prompt);
     b = await changes(b, [{ type: 'replace', id: current.id, item: { ...current, data } }]);
     if (promptValue(node(b, current.id)) !== prompt) failure('EDIT_REJECTED', '应用未接受提示词修改。', { addedEdgeIds });
     const persistence = await flush(args.canvasId);
@@ -539,6 +556,24 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     // 0.4.15x renders several layers per node; the price-bearing action button is the submit control.
     const normal = candidates.find((p: any) => typeof p.canGenerate === 'boolean' && 'estimatedPrice' in p) ??
       candidates.find((p: any) => typeof p.canGenerate === 'boolean') ?? candidates[0];
+    if (normal && (typeof normal.canGenerate === 'boolean' || 'estimatedPrice' in normal)) return normal;
+    // 0.4.279: the node's draft container holds a price-bearing submit button ({cost, title, disabled, onGenerate}).
+    const costControls: any[] = [];
+    for (const owner of b.all.filter((f: any) => f.memoizedProps?.nodeId === nodeId && typeof f.memoizedProps.onGenerate === 'function')) {
+      const stack = [owner.child];
+      while (stack.length) {
+        const f = stack.pop(); if (!f) continue;
+        const p = f.memoizedProps;
+        if (p && typeof p.onGenerate === 'function' && p.cost && typeof p.cost === 'object' && 'loading' in p.cost && 'disabled' in p && !costControls.includes(p)) costControls.push(p);
+        if (f.child) stack.push(f.child); if (f.sibling) stack.push(f.sibling);
+      }
+    }
+    if (costControls.length === 1) {
+      const p = costControls[0], cost = p.cost, text = typeof cost.text === 'string' ? cost.text.trim() : '';
+      const blocked = !!cost.onlyBlocked, price = cost.unlimited ? 0 : /^\d+(?:\.\d+)?$/.test(text) ? Number(text) : text || null;
+      return { nodeId, disabled: !!p.disabled || blocked, priceLoading: !!cost.loading, canGenerate: !p.disabled && !blocked && !cost.loading,
+        estimatedPrice: price, estimatedPriceDisplay: typeof p.title === 'string' ? p.title : null, unlimited: !!cost.unlimited, onGenerate: () => p.onGenerate() };
+    }
     if (normal) return normal;
     // Audio uses a separate native button inside its node-specific config panel.
     const audioPanels = b.all.filter((f: any) => f.memoizedProps?.nodeId === nodeId && typeof f.memoizedProps.onGenerateReady === 'function' && 'voiceInput' in f.memoizedProps && 'lyrics' in f.memoizedProps);
@@ -588,7 +623,8 @@ export function installRuntime(native: any, advancedInstaller?: any) {
       ready: !!panel && panel.canGenerate !== false && !panel.disabled && !panel.priceLoading && !panel.sending && !panel.isGenerating && !['pending', 'running', 'processing'].includes(task?.status),
       nativeSubmitAvailable: !!panel, estimatedPrice: panel?.estimatedPrice ?? null, estimatedPriceDisplay: typeof panel?.estimatedPriceDisplay === 'string' ? panel.estimatedPriceDisplay : typeof panel?.estimatedPriceDisplay?.text === 'string' ? panel.estimatedPriceDisplay.text : null,
       priceLoading: !!panel?.priceLoading,
-      reason: !panel ? '当前节点尚未显示可用的生成控制面板。' : panel.priceLoading ? '应用正在计算价格，请稍后再次准备。' : panel.canGenerate === false || panel.disabled ? '应用认为输入条件尚未满足，或当前模型不可用。' : null };
+      reason: !panel ? (n.type === 'text' && b.all.some((f: any) => f.memoizedProps?.nodeId === args.nodeId && typeof f.memoizedProps.onWrite === 'function' && typeof f.memoizedProps.onOpenEditor === 'function')
+        ? '此版本的文字节点没有原生生成面板，文字改由应用内 Agent 编写；MCP 不会代为发送 Agent 消息。' : '当前节点尚未显示可用的生成控制面板。') : panel.priceLoading ? '应用正在计算价格，请稍后再次准备。' : panel.canGenerate === false || panel.disabled ? '应用认为输入条件尚未满足，或当前模型不可用。' : null };
   }
   const submissions = new Map<string, any>();
   async function submitGeneration(args: any) {

@@ -6,7 +6,7 @@ import { installRuntime } from '../src/adapter/runtime.js';
 const canvasId = 'e1bcdd91-a65f-4710-a3ea-08d98a4da442';
 const otherCanvasId = '00000000-0000-0000-0000-000000000002';
 
-function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; savePolicy?: string; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean; elementData?: any }; projectSearch?: string } = {}) {
+function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; savePolicy?: string; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean; elementData?: any }; projectSearch?: string; draftPanel?: { cost?: any; disabled?: boolean } } = {}) {
   let nodes: any[] = options.initialNodes ?? [], edges: any[] = options.initialEdges ?? [];
   let edits = 0, flushes = 0, factories = 0, uploads = 0, generations = 0;
   let uploadedFile: File | undefined;
@@ -40,13 +40,20 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
   const owner: any = { memoizedProps: { canvasId, nodes, edges, isCollaborationEnabled: options.history === 'collab' } };
   const audioControl = { onClick() { generations++; }, sending: false, isGenerating: false, disabled: options.audioPanel?.disabled ?? false, priceLoading: options.audioPanel?.priceLoading ?? false, estimatedPrice: 3 };
   const panelFiber = options.audioPanel ? { memoizedProps: { nodeId: 'generator', onGenerateReady() {}, voiceInput: null, lyrics: '' }, child: { memoizedProps: audioControl, ...(options.audioPanel.duplicate ? { sibling: { memoizedProps: { ...audioControl } } } : {}) } } : { memoizedProps: panel };
-  const fibers: any[] = [owner, { memoizedProps: props }, { memoizedProps: { value: store } }, { memoizedProps: { value: flow } }, { memoizedProps: { value: viewport } }, panelFiber];
-  if (options.mentions) {
-    const mentionItems = () => options.mentions?.missingMentionItems ? [] : edges.filter(e => e.target === 'generator').map((e, index) => ({ id: e.source, label: nodes.find(n => n.id === e.source)?.data.title ?? e.source, renderText: 'Image ' + (index + 1) }));
-    fibers.push({ memoizedProps: { nodeId: 'generator', isReadonly: options.mentions.readonly, onPromptChange(value: string) { promptChanges++; promptDraft = value; } }, child: { memoizedProps: {
-      get mentionItems() { return mentionItems(); },
-      tiptapRef: { current: { getMentionIds() { return [...new Set(mentionItems().filter(item => promptDraft.includes('{{' + item.renderText + '}}')).map(item => item.id))]; } } },
-    } } });
+  const fibers: any[] = [owner, { memoizedProps: props }, { memoizedProps: { value: store } }, { memoizedProps: { value: flow } }, { memoizedProps: { value: viewport } }];
+  const mentionItems = () => options.mentions?.missingMentionItems ? [] : edges.filter(e => e.target === 'generator').map((e, index) => ({ id: e.source, label: nodes.find(n => n.id === e.source)?.data.title ?? e.source, renderText: 'Image ' + (index + 1) }));
+  const editorFiber = () => ({ memoizedProps: {
+    get mentionItems() { return mentionItems(); },
+    tiptapRef: { current: { getMentionIds() { return [...new Set(mentionItems().filter(item => promptDraft.includes('{{' + item.renderText + '}}')).map(item => item.id))]; } } },
+  } });
+  if (options.draftPanel) {
+    // 0.4.279: one draft container holds the tiptap editor and a price-bearing submit button; the container's own onGenerate is not the button.
+    const submit = { cost: options.draftPanel.cost ?? { text: '31', unlimited: false, onlyBlocked: false, loading: false, hidden: false }, title: '生成，31 Tapies', disabled: options.draftPanel.disabled ?? false, onGenerate() { generations++; } };
+    fibers.push({ memoizedProps: { nodeId: 'generator', kind: 'image', draft: '', writable: !options.mentions?.readonly, onDraftChange(value: string) { promptChanges++; promptDraft = value; }, onGenerate() { throw new Error('container onGenerate must not be called'); } },
+      child: { memoizedProps: submit, sibling: options.mentions ? editorFiber() : undefined } });
+  } else {
+    fibers.push(panelFiber);
+    if (options.mentions) fibers.push({ memoizedProps: { nodeId: 'generator', isReadonly: options.mentions.readonly, onPromptChange(value: string) { promptChanges++; promptDraft = value; } }, child: editorFiber() });
   }
   fibers.forEach((f, index) => { f.sibling = fibers[index + 1]; });
   const root = { '__reactContainer$test': { stateNode: { current: fibers[0] } } };
@@ -667,4 +674,86 @@ test('Element 平铺详情与包装详情均能引用；身份不匹配和手写
  const f=fixture({mentions:{elementData:{element_id:'other',name:'wrong'}},initialNodes:[{id:'generator',type:'video',position:{x:0,y:0},data:{type:'generate',prompt:'original'}}]});
  assert.equal((await f.dispatch('promptSet',{canvasId,nodeId:'generator',segments:[{type:'reference',source:'element',elementId:'123'}]})).error.code,'ELEMENT_NOT_FOUND');
  assert.equal((await f.dispatch('promptSet',{canvasId,nodeId:'generator',segments:[{type:'text',text:'{{ElementRef:123:raw}}'}]})).error.code,'RESERVED_REFERENCE_TOKEN');assert.equal(f.counters().edits,0);
+});
+
+/** 0.4.279 workspace: each mounted canvas owns its own React Flow subtree; earlier ones stay mounted but inactive. */
+function workspace(otherActive: boolean | undefined) {
+  const canvas = (canvasId: string, active: boolean | undefined, nodes: any[]) => {
+    const state = { nodes, edges: [] as any[] };
+    const store = { getState: () => ({ nodes: state.nodes, nodeLookup: new Map(), triggerNodeChanges() {}, transform: [0, 0, 1] }), subscribe() {} };
+    const flow = { getNodes: () => state.nodes, getEdges: () => state.edges, deleteElements: async () => {} };
+    const props = { 'data-keyboard-scope': 'canvas', nodeTypes: { text: {} }, nodesDraggable: true,
+      onNodesChange(changes: any[]) { for (const c of changes) if (c.type === 'add') state.nodes = [...state.nodes, c.item]; }, onConnect() {} };
+    const chain = [{ memoizedProps: props }, { memoizedProps: { value: store } }, { memoizedProps: { value: flow } }, { memoizedProps: { value: { fitView() {}, setViewport() {} } } }];
+    chain.forEach((f: any, i) => { f.sibling = chain[i + 1]; });
+    // As shipped, the innermost owner layer carries canvasId/nodes/edges but no `active` prop.
+    const inner: any = { memoizedProps: { canvasId, nodes, edges: [], renderContent() {} }, child: chain[0] };
+    return { state, owner: { memoizedProps: { canvasId, active, nodes, edges: [], onReady() {} }, child: inner } as any };
+  };
+  // The hidden canvas comes first in the tree, so an unscoped search would bind to it.
+  const hidden = canvas('8e37a0a0-1373-43e2-908f-0756ae931614', otherActive, [{ id: 'old', type: 'text', position: { x: 0, y: 0 }, data: {} }]);
+  const current = canvas(canvasId, true, []);
+  hidden.owner.sibling = current.owner;
+  const root = { '__reactContainer$test': { stateNode: { current: hidden.owner } } };
+  const make = (data: any, config: any) => ({ id: 'native-new', type: 'text', position: { x: 0, y: 0 }, data, ...config });
+  const sandbox: any = { location: { pathname: '/p/bb926a8f-55b4-4bcb-a15b-dab890206062', search: '?c=' + canvasId }, URLSearchParams, Map, Set, console,
+    document: { title: 'test', getElementById: () => root, querySelector: () => null }, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (v: any) => v,
+    native: { savePolicy: 'disabled', factories: { text: make }, modelRegistries: {}, policy: { getState: () => ({ mergedPolicy: {} }) } } };
+  runInNewContext(`(${installRuntime.toString()})(native)`, sandbox);
+  return { dispatch: async (action: string, args?: any) => JSON.parse(JSON.stringify(await sandbox.__tapnowCanvasMcp.dispatch(action, args))), hidden: hidden.state, current: current.state };
+}
+
+test('多画布工作区只绑定当前画布子树，隐藏画布的节点不被读取或修改', async () => {
+  const w = workspace(false);
+  const read = await w.dispatch('inspect');
+  assert.equal(read.canvasId, canvasId);
+  assert.deepEqual(read.nodes, []);
+  const result = await w.dispatch('edit', { canvasId, operations: [{ op: 'create', kind: 'text', data: { text: 'x' }, position: { x: 1, y: 2 } }] });
+  assert.equal(result.results[0].ok, true);
+  assert.deepEqual(w.current.nodes.map((n: any) => n.id), ['native-new']);
+  assert.deepEqual(w.hidden.nodes.map((n: any) => n.id), ['old']);
+});
+
+test('另一画布仍处于活动状态时视为切换中，拒绝读取', async () => {
+  for (const active of [true, undefined]) {
+    const result = await workspace(active).dispatch('inspect');
+    assert.equal(result.error.code, 'CANVAS_NOT_READY');
+  }
+});
+
+test('0.4.279 草稿容器：从提交按钮读取价格，提交走按钮而非容器', async () => {
+  const f = fixture({ draftPanel: {}, initialNodes: [{ id: 'generator', type: 'image', position: { x: 0, y: 0 }, data: { type: 'generate', prompt: 'cube', params: { model: 'm' } } }] });
+  const prepared = await f.dispatch('prepareGeneration', { canvasId, nodeId: 'generator' });
+  assert.equal(prepared.ready, true);
+  assert.equal(prepared.estimatedPrice, 31);
+  assert.equal(prepared.estimatedPriceDisplay, '生成，31 Tapies');
+  assert.equal(f.counters().generations, 0);
+  const submitted = await f.dispatch('submitGeneration', { canvasId, nodeId: 'generator', requestId: 'r1' });
+  assert.equal(submitted.ok, true);
+  assert.equal(f.counters().generations, 1);
+});
+
+test('0.4.279 草稿容器：价格加载中、禁用或仅剩封锁时不报告可提交', async () => {
+  for (const draftPanel of [{ cost: { text: '', loading: true } }, { disabled: true }, { cost: { text: '31', loading: false, onlyBlocked: true } }]) {
+    const f = fixture({ draftPanel, initialNodes: [{ id: 'generator', type: 'image', position: { x: 0, y: 0 }, data: { type: 'generate', prompt: 'cube', params: { model: 'm' } } }] });
+    const prepared = await f.dispatch('prepareGeneration', { canvasId, nodeId: 'generator' });
+    assert.equal(prepared.ready, false);
+    assert.equal(f.counters().generations, 0);
+  }
+});
+
+test('0.4.279 草稿容器：@素材通过 onDraftChange 写入原生编辑器', async () => {
+  const f = fixture({ draftPanel: {}, mentions: {}, initialNodes: [mentionTarget(), mentionSource()] });
+  const result = await f.dispatch('promptSet', { canvasId, nodeId: 'generator', segments: [{ type: 'text', text: '参考 ' }, { type: 'reference', source: 'canvas', nodeId: 'source-one' }] });
+  assert.equal(result.ok, true);
+  assert.equal(result.prompt, '参考 {{Image 1}}');
+  assert.deepEqual(result.renderedMentionIds, ['source-one']);
+  assert.equal(f.mentionState().promptDraft, '参考 {{Image 1}}');
+  assert.equal(f.counters().generations, 0);
+});
+
+test('0.4.279 草稿容器只读时拒绝写入 @素材', async () => {
+  const f = fixture({ draftPanel: {}, mentions: { readonly: true }, initialNodes: [mentionTarget(), mentionSource()] });
+  const result = await f.dispatch('promptSet', { canvasId, nodeId: 'generator', segments: [{ type: 'reference', source: 'canvas', nodeId: 'source-one' }] });
+  assert.equal(result.error.code, 'PROMPT_EDITOR_UNAVAILABLE');
 });

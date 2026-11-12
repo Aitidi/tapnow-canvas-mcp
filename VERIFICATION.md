@@ -2,6 +2,18 @@
 
 验证日期：2026-10-17；Windows、Tapnow Desktop 0.4.112、Node.js 24.13.1。
 
+## 桌面端 0.4.279 兼容性适配（2026-11-12）
+
+Windows、Tapnow Desktop 0.4.279、Node.js 24.13.0，调试端口 9333，空白画布，未提交任何付费生成。
+
+- 多画布工作区：同一页面同时挂载多个画布，每个画布有多层带 `canvasId/nodes/edges` 的所属组件，只有部分层带 `active`。原适配器在整页查找，会读到其他画布或拒绝读取。现只在当前路由画布的子树内绑定；任一其他画布仍处于活动状态或当前画布未激活时报 `CANVAS_NOT_READY`。
+- 提示词编辑器：`onPromptChange` 改为草稿容器 `onDraftChange`，tiptap 编辑器（`mentionItems`、`tiptapRef`）在其子树内；`writable:false` 视为只读。
+- 生成按钮与价格：价格不再是 `estimatedPrice`，而在容器子树内的提交按钮 `{cost:{text,loading,unlimited,onlyBlocked,…},title,disabled,onGenerate}`。准备与提交都走该按钮；价格加载中、禁用或 `onlyBlocked` 时不报告可提交。
+- 文字生成节点：新版没有原生生成面板，文字由应用内 Agent 编写。prepare 返回 `ready:false` 并说明原因，MCP 不代发 Agent 消息。
+- 实测通过：创建、修改、布局、撤销重做、分组与解除分组、错误拒绝、上传、裁剪、下载、保存与刷新比对、自动放置、画布列表 70 个；画布素材（`{{Image 1}}`）与素材库 @素材写入；生成准备价格图片 31–35 / 视频 100 / 音频 25。
+- 偶发：一次解除分组后原生保存未确认，随后刷新比对不一致；重跑通过。
+- 未测：实际提交生成、付费图片工具、网页端。
+
 ## 桌面端 0.4.258 兼容性适配（2026-11-10）
 
 Windows、Tapnow Desktop 0.4.258、Node.js 24.13.0，调试端口 9333，空白画布，未提交任何付费生成。
