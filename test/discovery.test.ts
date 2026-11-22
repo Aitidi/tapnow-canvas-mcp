@@ -144,3 +144,12 @@ test('0.4.15x 桌面端从入口脚本找到延迟加载的 canvas-v2 主包，�
   assert.deepEqual(imports, expected);
   assert.deepEqual(Array.from(result.moduleUrls), expected);
 });
+
+
+test('原生详情加载器按完整形状发现；发现阶段不加载节点',async()=>{
+ let calls=0;
+ async function loader(context:any,ids:string[]){const id=context.canvasId;context.markLoading(ids);const data=await context.getNodeDetails();if(!data)throw Error('details failed');return{missingIds:[],data,canvasId:id}}
+ const sandbox:any={URL,__name:(x:any)=>x,location:{href:'tapnow://app/canvas/test'},document:{scripts:[{src:'tapnow://app/assets/vendor-pkg-endpoints-AAAAAAAA.js'}],querySelectorAll:()=>[]},load:async()=>({loader})};
+ const native=await runInNewContext('('+discoverNativeModules.toString().replace('await import(url)','await load(url)')+')()',sandbox);assert.equal(calls,0);assert.equal(native.nodeDetails,loader);
+ await native.nodeDetails({canvasId:'test',markLoading(){calls++},getNodeDetails:async()=>[]},['one']);assert.equal(calls,1);
+});

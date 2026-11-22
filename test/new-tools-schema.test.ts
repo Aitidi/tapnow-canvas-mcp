@@ -20,6 +20,8 @@ test('新增工具拒绝遗漏身份、任意代码和未声明参数',async()=>
   assert.equal(calls,0);
   await client.callTool({name:'tapnow_history_restore',arguments:{...base,historyId:'batch'}});
   await client.callTool({name:'tapnow_image_tools',arguments:{...base,phase:'prepare',operation:'multi_angle',settings:{rotation:15}}});assert.equal(calls,2);
+  await client.callTool({name:'tapnow_image_tools',arguments:{...base,phase:'prepare',operation:'relight',settings:{look:'split',temperature:5600}}});assert.equal(calls,3);
+  const invalid=await client.callTool({name:'tapnow_image_tools',arguments:{...base,phase:'prepare',operation:'multi_angle',settings:{look:'split'}}});assert.equal(invalid.isError,true);assert.equal(calls,3);
  }finally{await client.close();await server.close();}
 });
 

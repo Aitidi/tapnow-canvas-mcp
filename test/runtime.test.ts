@@ -6,15 +6,16 @@ import { installRuntime } from '../src/adapter/runtime.js';
 const canvasId = 'e1bcdd91-a65f-4710-a3ea-08d98a4da442';
 const otherCanvasId = '00000000-0000-0000-0000-000000000002';
 
-function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boolean }; savePolicy?: string; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean; elementData?: any }; projectSearch?: string; draftPanel?: { cost?: any; disabled?: boolean } } = {}) {
+function fixture(options: { details?: { hydrate?: (node:any)=>any; missing?: string[]; error?: boolean; switchCanvas?: boolean; neverResolve?: boolean }; webDockbar?: { disabled?: boolean; extraNode?: boolean }; savePolicy?: string; flushResult?: string; switchAfterChange?: boolean; policy?: any; initialNodes?: any[]; initialEdges?: any[]; history?: 'local' | 'collab'; mutateDuringFlush?: boolean; audioPanel?: { disabled?: boolean; priceLoading?: boolean; duplicate?: boolean }; modelDefaults?: Record<string, Record<string, Record<string, unknown>>>; mentions?: { readonly?: boolean; rejectAsset?: boolean; libraryItems?: any[]; missingMentionItems?: boolean; elementData?: any }; projectSearch?: string; projectId?: string; draftPanel?: { cost?: any; disabled?: boolean } } = {}) {
   let nodes: any[] = options.initialNodes ?? [], edges: any[] = options.initialEdges ?? [];
   let edits = 0, flushes = 0, factories = 0, uploads = 0, generations = 0;
   let uploadedFile: File | undefined;
   let promptDraft = '', promptChanges = 0, libraryGets = 0;
   const managementCalls:any[] = [];
+  const detailCalls:any[] = [];
   const historyCalls: Record<string, number> = { localUndo: 0, localRedo: 0, collabUndo: 0, collabRedo: 0 };
   const location: any = options.projectSearch === undefined ? { pathname: '/canvas/' + canvasId, href: 'tapnow://app/canvas/' + canvasId, search: '' }
-    : { pathname: '/p/11111111-2222-3333-4444-555555555555', search: options.projectSearch, href: 'tapnow://app/p/11111111-2222-3333-4444-555555555555' + options.projectSearch };
+    : { pathname: '/p/' + (options.projectId ?? '11111111-2222-3333-4444-555555555555'), search: options.projectSearch, href: 'tapnow://app/p/' + (options.projectId ?? '11111111-2222-3333-4444-555555555555') + options.projectSearch };
   const store = { getState: () => ({ nodes, nodeLookup: new Map(nodes.map(n => [n.id, n])), triggerNodeChanges() {}, transform: [0, 0, 1] }), subscribe() {} };
   const flow = { getNodes: () => nodes, getEdges: () => edges, deleteElements: async (args: any) => {
     if (args.nodes) nodes = nodes.filter(n => !args.nodes.some((item: any) => n.id === item.id));
@@ -86,7 +87,19 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
       async get(assetId: string) { libraryGets++; return options.mentions?.libraryItems?.find(item => item.assetId === assetId) ?? null; },
     },
   };
-  const sandbox: any = { location, document, native, console, Map, Set, File, atob, URLSearchParams, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (value: any) => value };
+  if(options.details){
+    const context={canvasId,stores:{},graph:{getNodes:()=>nodes,applyChanges(){}}};
+    fibers.push({memoizedProps:{value:context}});
+    native.nodeDetails=async(ctx:any,ids:string[],args:any)=>{
+      assert.equal(ctx,context);detailCalls.push({ids:[...ids],...args});
+      if(options.details?.switchCanvas)location.pathname='/canvas/'+otherCanvasId;
+      if(options.details?.error)throw Error('native details failed');
+      if(options.details?.neverResolve)return new Promise(()=>{});
+      nodes=nodes.map(n=>ids.includes(n.id)&&options.details?.hydrate?options.details.hydrate(n):n);
+      return {missingIds:options.details?.missing??[]};
+    };
+  }
+  const sandbox: any = { location, document, native, console, Map, Set, File, atob, URLSearchParams, clearTimeout, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (value: any) => value };
   if (options.webDockbar) {
     delete native.factories.text;
     delete native.factories.textGenerate;
@@ -129,6 +142,7 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
     hooks.forEach((hook: any, index: number) => { hook.next = hooks[index + 1]; });
     owner.memoizedState = hooks[0];
   }
+  fibers.forEach((f, index) => { f.sibling = fibers[index + 1]; });
   runInNewContext(`(${installRuntime.toString()})(native)`, sandbox);
   return {
     dispatch: async (action: string, args?: any) => JSON.parse(JSON.stringify(await sandbox.__tapnowCanvasMcp.dispatch(action, args))),
@@ -139,6 +153,7 @@ function fixture(options: { webDockbar?: { disabled?: boolean; extraNode?: boole
     historyCalls: () => ({ ...historyCalls }),
     uploadedFile: () => uploadedFile,
     managementCalls: () => JSON.parse(JSON.stringify(managementCalls)),
+    detailCalls: () => detailCalls,
   };
 }
 
@@ -677,7 +692,7 @@ test('Element 平铺详情与包装详情均能引用；身份不匹配和手写
 });
 
 /** 0.4.279 workspace: each mounted canvas owns its own React Flow subtree; earlier ones stay mounted but inactive. */
-function workspace(otherActive: boolean | undefined) {
+function workspace(otherActive: boolean | undefined, detailsContext?: 'provider' | 'ref' | 'missing') {
   const canvas = (canvasId: string, active: boolean | undefined, nodes: any[]) => {
     const state = { nodes, edges: [] as any[] };
     const store = { getState: () => ({ nodes: state.nodes, nodeLookup: new Map(), triggerNodeChanges() {}, transform: [0, 0, 1] }), subscribe() {} };
@@ -694,11 +709,23 @@ function workspace(otherActive: boolean | undefined) {
   const hidden = canvas('8e37a0a0-1373-43e2-908f-0756ae931614', otherActive, [{ id: 'old', type: 'text', position: { x: 0, y: 0 }, data: {} }]);
   const current = canvas(canvasId, true, []);
   hidden.owner.sibling = current.owner;
-  const root = { '__reactContainer$test': { stateNode: { current: hidden.owner } } };
+  let rootFiber: any = hidden.owner;
+  let detailContext: any;
+  if (detailsContext) {
+    current.state.nodes.push(overviewNode());
+    detailContext = { canvasId, stores: {}, graph: { getNodes: () => current.state.nodes, applyChanges() {} } };
+    rootFiber = { child: hidden.owner, ...(detailsContext === 'provider' ? { memoizedProps: { value: detailContext } } : detailsContext === 'ref' ? { memoizedState: { memoizedState: { current: detailContext } } } : {}) };
+  }
+  const root = { '__reactContainer$test': { stateNode: { current: rootFiber } } };
   const make = (data: any, config: any) => ({ id: 'native-new', type: 'text', position: { x: 0, y: 0 }, data, ...config });
   const sandbox: any = { location: { pathname: '/p/bb926a8f-55b4-4bcb-a15b-dab890206062', search: '?c=' + canvasId }, URLSearchParams, Map, Set, console,
-    document: { title: 'test', getElementById: () => root, querySelector: () => null }, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (v: any) => v,
+    document: { title: 'test', getElementById: () => root, querySelector: () => null }, clearTimeout, setTimeout: (fn: () => void) => setTimeout(fn, 0), __name: (v: any) => v,
     native: { savePolicy: 'disabled', factories: { text: make }, modelRegistries: {}, policy: { getState: () => ({ mergedPolicy: {} }) } } };
+  if (detailsContext) sandbox.native.nodeDetails = async (context: any) => {
+    assert.equal(context, detailContext);
+    current.state.nodes = current.state.nodes.map(n => ({ ...n, data: { ...n.data, prompt: 'loaded from active canvas' } }));
+    return { missingIds: [] };
+  };
   runInNewContext(`(${installRuntime.toString()})(native)`, sandbox);
   return { dispatch: async (action: string, args?: any) => JSON.parse(JSON.stringify(await sandbox.__tapnowCanvasMcp.dispatch(action, args))), hidden: hidden.state, current: current.state };
 }
@@ -719,6 +746,19 @@ test('另一画布仍处于活动状态时视为切换中，拒绝读取', async
     const result = await workspace(active).dispatch('inspect');
     assert.equal(result.error.code, 'CANVAS_NOT_READY');
   }
+});
+
+test('多画布的详情提供器位于编辑子树之外，仍按当前画布 ID 加载；缺失时拒绝写入', async () => {
+  for (const placement of ['provider', 'ref'] as const) {
+    const w = workspace(false, placement), r = await w.dispatch('inspect');
+    assert.equal(r.nodes[0].data.prompt, 'loaded from active canvas');
+    assert.deepEqual(w.hidden.nodes[0].data, {});
+  }
+  const w = workspace(false, 'missing');
+  assert.deepEqual((await w.dispatch('inspect')).detailsMissing, ['offscreen']);
+  const r = await w.dispatch('edit', { canvasId, operations: [{ op: 'update', nodeId: 'offscreen', data: { title: 'overwrite' } }] });
+  assert.equal(r.error.code, 'NODE_DETAILS_UNAVAILABLE');
+  assert.equal(w.current.nodes[0].data.title, 'overview');
 });
 
 test('0.4.279 草稿容器：从提交按钮读取价格，提交走按钮而非容器', async () => {
@@ -785,4 +825,33 @@ test('之后连线时，手动移动过或指定过 position 的节点不被移�
   const byId = new Map(f.currentNodes().map((n: any) => [n.id, n.position]));
   assert.deepEqual(byId.get(made.aliases.moved), { x: 50, y: 60 });
   assert.deepEqual(byId.get(made.aliases.fixed), { x: 12, y: 34 });
+});
+
+
+const overviewNode=()=>({id:'offscreen',type:'image',position:{x:20000,y:20000},data:{type:'generate',title:'overview'}});
+test('画布读取无需 canvasId 也通过原生加载器补全视口外节点；元数据读取保持轻量',async()=>{
+ const f=fixture({initialNodes:[overviewNode()],details:{hydrate:n=>({...n,data:{...n.data,prompt:'preserved prompt',params:{model:'native-model',seed:42}}})}});
+ assert.equal((await f.dispatch('inspect',{includeData:false})).ok,true);assert.equal(f.detailCalls().length,0);
+ const r=await f.dispatch('inspect');assert.equal(r.nodes[0].data.prompt,'preserved prompt');assert.deepEqual(r.nodes[0].data.params,{model:'native-model',seed:42});assert.deepEqual(f.detailCalls(),[{ids:['offscreen'],force:false}]);
+});
+test('更新视口外节点前补全详情，局部修改不会抹掉提示词与模型参数',async()=>{
+ const f=fixture({initialNodes:[overviewNode()],details:{hydrate:n=>({...n,data:{...n.data,prompt:'keep',params:{model:'native-model',seed:42}}})}});
+ const r=await f.dispatch('edit',{canvasId,operations:[{op:'update',nodeId:'offscreen',data:{title:'changed'}}]});assert.equal(r.results[0].ok,true);assert.equal(f.currentNodes()[0].data.prompt,'keep');assert.deepEqual(f.currentNodes()[0].data.params,{model:'native-model',seed:42});
+});
+test('详情不可用时读取明确标记缺失，写入则停止，避免覆盖未加载内容',async()=>{
+ for(const details of [{missing:['offscreen']},{error:true},{neverResolve:true}]){
+  const f=fixture({initialNodes:[overviewNode()],details});
+  const r=await f.dispatch('inspect',{nodeIds:['offscreen']});assert.deepEqual(r.detailsMissing,['offscreen']);
+  const edited=await f.dispatch('edit',{canvasId,operations:[{op:'update',nodeId:'offscreen',data:{title:'bad'}}]});assert.equal(edited.error.code,'NODE_DETAILS_UNAVAILABLE');assert.equal(f.counters().edits,0);assert.equal(f.counters().flushes,0);
+ }
+});
+test('节点详情请求期间切换画布会停止旧画布写入',async()=>{
+ const f=fixture({initialNodes:[overviewNode()],details:{switchCanvas:true}});
+ const r=await f.dispatch('edit',{canvasId,operations:[{op:'update',nodeId:'offscreen',data:{title:'bad'}}]});assert.equal(r.error.code,'CANVAS_CHANGED');assert.equal(f.counters().edits,0);
+});
+
+
+test('独立画布工作区 t=c 从路径取得画布 ID；非法 c 参数不会回退到路径',async()=>{
+ const f=fixture({projectSearch:'?t=c',projectId:canvasId});assert.equal((await f.dispatch('inspect')).canvasId,canvasId);
+ for(const search of ['?t=c&c=bad','?t=c&c=','?t=project']){const r=await fixture({projectSearch:search,projectId:canvasId}).dispatch('inspect');assert.equal(r.error.code,'NO_ACTIVE_CANVAS');}
 });

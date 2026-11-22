@@ -266,3 +266,9 @@ test('网页多个标签时拒绝猜测，指定目标 ID 后才允许连接', a
   assert.equal((await second.connect()).id, 'two');
   assert.deepEqual(attaches, ['two']);
 });
+
+
+test('网页独立画布路由 p/canvas?t=c 可连接，项目首页及非法画布标识不可连接',()=>{
+ const url='https://app.tapnow.ai/p/e1bcdd91-a65f-4710-a3ea-08d98a4da442?t=c';assert.equal(isTapnowTarget(url,'web'),true);
+ for(const value of [url.replace('?t=c','?t=project'),url+'&c=bad',url+'&c=',url.replace('app.tapnow.ai','evil.example'),url.replace('https:','http:')])assert.equal(isTapnowTarget(value,'web'),false,value);
+});

@@ -24,6 +24,76 @@ test('循环分组和不支持的节点在写入前拒绝',async()=>{const f=fix
 test('原生取消不可用时不修改状态；唯一真实 stop 才可调用',async()=>{const f=fixture();await assert.rejects(f.handlers.taskControl({canvasId,nodeId:'image',action:'cancel'}),{code:'CAPABILITY_UNAVAILABLE'});let stops=0;const store={getState:()=>({recordsByNode:{image:[{id:'activity',status:'running',stop:async()=>{stops++}}]},setActions(){}})};f.b.all=[{memoizedProps:{value:store}}];const r=await f.handlers.taskControl({canvasId,nodeId:'image',action:'cancel'});assert.equal(stops,1);assert.equal(r.cancellationRequested,true);assert.equal(f.items[0].data.taskInfo,undefined);});
 test('放大节点可在无成果地址时准备与设置参数，重复 UI 包装不误判',async()=>{const f=fixture();f.items[0].data={type:'upscale',src:''};const form:any={scale:2,style:'general',loading:false,tapiesRequired:'16~162',onScaleChange:(v:any)=>{form.scale=v},onStyleChange:(v:any)=>{form.style=v},onSubmit:()=>{throw Error('must not submit')}};const price={onClick:form.onSubmit,isGenerating:false,disabled:false,estimatedPrice:'16~162'};const owner={memoizedProps:{nodeId:'image',visible:true,parentImage:'https://files.tapnow.media/source.png'},child:{memoizedProps:form,child:{memoizedProps:{...form}},sibling:{memoizedProps:price}}};f.b.all=[owner];const r=await f.handlers.imageTools({canvasId,nodeId:'image',phase:'prepare',operation:'upscale',settings:{scale:4}});assert.equal(r.ready,true);assert.equal(r.fields.scale,4);await assert.rejects(f.handlers.imageTools({canvasId,nodeId:'image',phase:'execute',operation:'upscale'}),{code:'PAID_AUTHORIZATION_REQUIRED'});});
 
+test('新版悬浮工具栏从当前图片的原生 memo 动作列表识别操作，prepare 不调用抠图',async()=>{
+ const f=fixture();let submissions=0;
+ const actions=[{key:'crop',handle(){}},{key:'multi_angle',handle(){}},{key:'relight',handle(){}},{key:'more',menuItems:[{key:'enhance',handle(){}},{key:'cutout',handle(){submissions++}}]}];
+ f.b.all=[{memoizedProps:{nodeId:'other'},memoizedState:{memoizedState:[actions,[]]}},{memoizedProps:{nodeId:'image'},memoizedState:{memoizedState:[actions,[]]}}];
+ const r=await f.handlers.imageTools({canvasId,nodeId:'image',phase:'inspect'});
+ assert.deepEqual(r.nativeOperations.map((x:any)=>x.operation),['multi_angle','relight','upscale','cutout']);
+ assert.equal((await f.handlers.imageTools({canvasId,nodeId:'image',operation:'cutout',phase:'prepare'})).ready,true);
+ assert.equal(submissions,0);
+ actions[3].menuItems![1].disabled=true;
+ await assert.rejects(f.handlers.imageTools({canvasId,nodeId:'image',operation:'cutout',phase:'prepare'}),{code:'CAPABILITY_UNAVAILABLE'});
+ f.b.all=f.b.all.slice(0,1);
+ assert.deepEqual((await f.handlers.imageTools({canvasId,nodeId:'image',phase:'inspect'})).nativeOperations,[]);
+});
+
+test('新版资源编辑器等待菜单动画结束后打开参数面板，保留原生提交与扣费检查',async t=>{
+ const oldDocument=(globalThis as any).document;(globalThis as any).document={};t.after(()=>{if(oldDocument===undefined)delete(globalThis as any).document;else(globalThis as any).document=oldDocument});
+ const f=fixture();let opened=0,closed=0,submitted=0,legacy=0,visibilityChecks=0,clicks=0;
+ const price={estimatedPrice:10,isGenerating:false,disabled:false,onClick(){submitted++}};
+ const control={min:-90,max:90,value:-30,locked:false,onValueChange(value:number){control.value=value}};
+ function multiAnglePanel(){return 'multiAngleRotation'}
+ const panel={type:multiAnglePanel,memoizedProps:{nodeId:'image',embedded:true,presentation:'inspector',active:true,src:f.items[0].data.src,initialParams:{},onClose(){closed++}},child:{memoizedProps:control,sibling:{memoizedProps:price}}};
+ const section:any={id:'edit',open:false,onToggle(){section.open=true}};
+ const action={queueKey:'image:'+f.items[0].data.src,opensPanel:true,onClick(){open('multi_angle')}};
+ const button={type:'button',memoizedProps:{'data-opens-panel':true,disabled:false},stateNode:{isConnected:true,getClientRects:()=>[{}],closest(){return ++visibilityChecks<3?{}:null},click(){clicks++;action.onClick()}}};
+ const info={id:'info',actions:{props:{activeLayer:{id:'layer',src:f.items[0].data.src}}}};
+ const resource:any={memoizedProps:{node:f.items[0],detailsReady:true,onClose(){}},child:{memoizedProps:section,sibling:{memoizedProps:action,child:button,sibling:{memoizedProps:info}}}};
+ function open(operation:string){assert.equal(operation,'multi_angle');f.b.all.push(panel)}
+ f.b.canvasContext={openResource(args:any){assert.deepEqual(args,{view:'image',nodeId:'image'});opened++;f.b.all.push(resource)}};
+ f.b.all=[{memoizedProps:{nodeId:'image',groups:[[{key:'editMore'}]],tools:[{key:'multi_angle',handle(){legacy++}}]}}];
+ const r=await f.handlers.imageTools({canvasId,nodeId:'image',operation:'multi_angle',phase:'prepare',settings:{rotation:20}});
+ assert.equal(r.editor,'resource');assert.equal(r.prepared,true);assert.equal(r.ready,true);assert.equal(r.fields.rotation,20);
+ assert.equal(opened,1);assert.equal(closed,0);assert.equal(legacy,0);assert.equal(submitted,0);assert.equal(f.items[0].data.mode,undefined);assert.equal(clicks,1);assert.ok(visibilityChecks>=3);
+ await assert.rejects(f.handlers.imageTools({canvasId,nodeId:'image',operation:'multi_angle',phase:'execute'}),{code:'PAID_AUTHORIZATION_REQUIRED'});
+ await f.handlers.imageTools({canvasId,nodeId:'image',operation:'multi_angle',phase:'execute',allowPaid:true});assert.equal(submitted,1);
+});
+
+test('新版放大面板按所属资源识别图层表单，参数读取和付费按钮均限定在当前面板',async()=>{
+ const f=fixture();let submitted=0;
+ function nativeUpscale(){return 'TOPAZLABS scaleFactor smartGrain'}
+ const scale={value:2,options:[2,4,6],onChange(v:number){scale.value=v}},style={id:'style',label:'Style',value:'general',onValueChange(v:string){style.value=v}};
+ const price={estimatedPrice:'15~63',disabled:false,isGenerating:false,onClick(){submitted++}};
+ const panel:any={type:nativeUpscale,memoizedProps:{layer:{src:f.items[0].data.src},session:{media:{type:'image'}},submitGeneration(){},onClose(){}},child:{memoizedProps:scale,sibling:{memoizedProps:style,sibling:{memoizedProps:price}}}};
+ const resource={memoizedProps:{node:f.items[0],detailsReady:true,onClose(){}},child:panel};f.b.all=[resource,panel];
+ await assert.rejects(f.handlers.imageTools({canvasId,nodeId:'image',phase:'execute',operation:'upscale',settings:{scale:4,style:'high_fidelity'}}),{code:'PAID_AUTHORIZATION_REQUIRED'});
+ assert.equal(scale.value,4);assert.equal(style.value,'high_fidelity');assert.equal(submitted,0);
+ await f.handlers.imageTools({canvasId,nodeId:'image',phase:'execute',operation:'upscale',allowPaid:true});assert.equal(submitted,1);
+ resource.memoizedProps.node={...f.items[0],id:'other'};
+ await assert.rejects(f.handlers.imageTools({canvasId,nodeId:'image',phase:'execute',operation:'upscale',allowPaid:true}),{code:'GENERATION_NOT_READY'});assert.equal(submitted,1);
+});
+
+test('新版打光使用原生预设及颜色档位，旧自由角度参数明确拒绝，未授权不提交',async()=>{
+ const f=fixture();let submitted=0;
+ function nativeRelight(){return 'tamar-relight azimuthDeg rimEnabled'}
+ const params:any={preset:'top_front_45',brightnessLevel:50,temperatureK:5600,rimEnabled:false};
+ const form:any={params,onPresetChange(value:string){form.params={...form.params,preset:value}},onParamsChange(value:any){form.params=value}};
+ const look:any={'data-testid':'relight-look-split','aria-pressed':false,onClick(){look['aria-pressed']=true;form.params={...form.params,preset:'left_45'}}};
+ const color={'data-testid':'relight-color-5600',onClick(){form.params={...form.params,temperatureK:5600}}};
+ const brightness={value:50,options:[0,25,50,75,100],onChange(value:number){form.params={...form.params,brightnessLevel:value}}};
+ const rim={checked:false,onCheckedChange(value:boolean){form.params={...form.params,rimEnabled:value}}};
+ const price={estimatedPrice:20,disabled:false,isGenerating:false,onClick(){submitted++}};
+ const panel:any={type:nativeRelight,memoizedProps:{nodeId:'image',src:f.items[0].data.src,initialParams:{},embedded:true},child:{memoizedProps:form,sibling:{type:'button',memoizedProps:look,sibling:{type:'button',memoizedProps:color,sibling:{memoizedProps:brightness,sibling:{memoizedProps:rim,sibling:{memoizedProps:price}}}}}}};
+ const owner={memoizedProps:{node:f.items[0],detailsReady:true,onClose(){}},child:panel};f.b.all=[owner,panel];
+ const args={canvasId,nodeId:'image',phase:'execute',operation:'relight'};
+ await assert.rejects(f.handlers.imageTools({...args,settings:{look:'split',temperature:5600,brightness:50,rimEnabled:true}}),{code:'PAID_AUTHORIZATION_REQUIRED'});
+ assert.equal(form.params.preset,'left_45');assert.equal(form.params.rimEnabled,true);assert.equal(submitted,0);
+ await assert.rejects(f.handlers.imageTools({...args,settings:{temperature:6500}}),{code:'INVALID_ARGUMENT'});
+ await assert.rejects(f.handlers.imageTools({...args,settings:{azimuth:30}}),{code:'CAPABILITY_UNAVAILABLE'});
+ await f.handlers.imageTools({...args,allowPaid:true});assert.equal(submitted,1);
+});
+
 test('打光导出只调用节点内的免费原生导出按钮，按钮禁用时拒绝',async()=>{
  const f=fixture();f.items[0].data.mode='relight';let paid=0,exports=0;
  function ownerComponent(){return 'relightExport'}

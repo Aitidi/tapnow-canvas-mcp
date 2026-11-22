@@ -67,6 +67,13 @@ export class TapnowService {
     const same = await this.cdp.evaluate(`globalThis.__tapnowCanvasMcp?.fingerprint === ${JSON.stringify(this.runtimeFingerprint)} && globalThis.__tapnowCanvasMcp?.moduleSignature === ${moduleSignature}`);
     if (!same) {
       await collectModuleHints(this.cdp);
+      // The workspace becomes editable before its deferred capability imports
+      // are exposed. Never cache a partial adapter during that transition.
+      const loading = await this.cdp.evaluate(`location.origin==='https://app.tapnow.ai' && [...document.scripts].some(s=>/\\/assets\\/(?:index|main)-[A-Za-z0-9_-]{8}\\.js$/.test(s.src)) && !(globalThis.__tapnowCanvasMcpModuleHints??[]).some(u=>new RegExp('/assets/'+'vendor-pkg-canvas'+'(?:-v2)?-[A-Za-z0-9_-]{8}\\\\.js$').test(u))`);
+      if (loading) {
+        await this.cdp.evaluate('delete globalThis.__tapnowCanvasMcpModuleHints');
+        throw new TapnowError('CANVAS_NOT_READY', '画布工具模块正在加载，请稍后重新读取。');
+      }
       await collectScopedNative(this.cdp);
       try {
         await collectPersistenceNative(this.cdp);
@@ -222,14 +229,16 @@ export class TapnowService {
     await this.invoke('guard',{canvasId:sourceCanvasId});
     const destination=await this.invoke('canvasGet',{destinationCanvasId});
     if((destination.canvas?.id??destination.id)!==destinationCanvasId)throw new TapnowError('CANVAS_NOT_FOUND','目标画布不存在或无法读取。');
+    const record=destination.canvas??destination;
+    if(record.type&&record.type!=='canvas')throw new TapnowError('INVALID_ARGUMENT','目标是项目集或其他资源，请选择一个画布。');
     const saved=await this.invoke('save',{canvasId:sourceCanvasId});
     if(saved.persistence?.confirmed!==true)throw new TapnowError('SAVE_NOT_CONFIRMED','源画布未确认保存，停止切换。');
     const current=new URL(await this.cdp.evaluate('location.href'));
     const base=current.protocol==='tapnow:'?'tapnow://app':current.origin;
-    // Project workspaces route /p/<project>?c=<canvas>; the web app sends /canvas/<id> to the project list.
-    const record=destination.canvas??destination;
-    const project=[record.project_id,record.projectId,/^\/p\/([0-9a-f-]{36})\/?$/i.exec(current.pathname)?.[1]].find(v=>typeof v==='string'&&/^[0-9a-f-]{36}$/i.test(v));
-    const url=project?`${base}/p/${project}?c=${destinationCanvasId}`:`${base}/canvas/${destinationCanvasId}`;
+    // Route by the destination's own parent, never by the currently open project.
+    const project=[record.parent_id,record.project_id,record.projectId].find(v=>typeof v==='string'&&/^[0-9a-f-]{36}$/i.test(v));
+    const workspace=current.origin==='https://app.tapnow.ai'||/^\/p\//.test(current.pathname);
+    const url=project?`${base}/p/${project}?c=${destinationCanvasId}`:workspace?`${base}/p/${destinationCanvasId}?t=c`:`${base}/canvas/${destinationCanvasId}`;
     await this.cdp.send('Page.navigate',{url});
     const started=Date.now();let last:any;
     while(Date.now()-started<20000){try{await this.ready();const state=await this.invoke('inspect',{includeData:false});if(state.canvasId===destinationCanvasId)return state;}catch(e){last=e;}await pause(200);}
@@ -250,6 +259,8 @@ export class TapnowService {
         for(const id of selected)if(!byId.has(id))throw new TapnowError('NODE_NOT_FOUND','复制来源节点不存在。',{nodeId:id});
         for(let count=0;count<source.nodes.length;count++){let added=false;for(const n of source.nodes)if(n.parentId&&selected.has(n.parentId)&&!selected.has(n.id)){selected.add(n.id);added=true;}if(!added)break;}
         if(!selected.size||selected.size>100)throw new TapnowError('INVALID_ARGUMENT','复制（含分组后代）需要 1–100 个节点。');
+        const missing=(source.detailsMissing??[]).filter((id:string)=>selected.has(id));
+        if(missing.length)throw new TapnowError('NODE_DETAILS_UNAVAILABLE','复制来源的节点详情尚未加载完整，已停止切换画布。',{nodeIds:missing});
         const absolute=(n:any,seen=new Set<string>()):any=>{if(seen.has(n.id))throw new TapnowError('INVALID_GROUP','来源分组存在循环。');seen.add(n.id);const parent=byId.get(n.parentId);if(!parent)return n.position;const p=absolute(parent,seen);return {x:p.x+n.position.x,y:p.y+n.position.y};};
         const copied=[...selected].map(id=>{const n=byId.get(id);if(!['text','image','video','audio','group'].includes(n.type)||['pending','running','processing'].includes(n.data?.taskInfo?.status))throw new TapnowError('UNSUPPORTED_NODE','只能复制支持且未在生成中的节点。');const position=absolute(n);return {...n,position:n.parentId&&selected.has(n.parentId)?n.position:position};});
         await this.openCanvas(args.destinationCanvasId,args.canvasId);

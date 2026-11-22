@@ -8,7 +8,9 @@ export function installRuntime(native: any, advancedInstaller?: any) {
   const route = () => {
     // Older builds route /canvas/<id>; 0.4.15x desktop routes /p/<project>?c=<canvas>.
     const legacy = /^\/canvas\/([0-9a-f-]{36})\/?$/i.exec(location.pathname)?.[1];
-    const scoped = /^\/p\/[0-9a-f-]{36}\/?$/i.test(location.pathname) ? new URLSearchParams(location.search).get('c') : null;
+    const workspace = /^\/p\/([0-9a-f-]{36})\/?$/i.exec(location.pathname);
+    const query = new URLSearchParams(location.search);
+    const scoped = workspace ? query.get('c') ?? (query.get('t') === 'c' ? workspace[1] : null) : null;
     return legacy ?? (scoped && /^[0-9a-f-]{36}$/i.test(scoped) ? scoped : undefined) ?? failure('NO_ACTIVE_CANVAS', '请先在 Tapnow 主窗口打开一个画布。');
   };
   const guard = (id: string) => {
@@ -37,7 +39,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
   function bindings() {
     const id = route();
     const all = fibers();
-    let store: any, flow: any, viewport: any, pile: any, host: any;
+    let store: any, flow: any, viewport: any, pile: any, host: any, canvasContext: any;
     const history: Record<string, any[]> = { undo: [], redo: [] };
     const owners = all.filter(f => { const p = f.memoizedProps; return p?.canvasId && Array.isArray(p.nodes) && Array.isArray(p.edges); });
     const own = owners.filter(f => f.memoizedProps.canvasId === id), others = owners.filter(f => f.memoizedProps.canvasId !== id);
@@ -78,8 +80,20 @@ export function installRuntime(native: any, advancedInstaller?: any) {
         h = h.next;
       }
     }
+    // The canvas runtime provider can sit above the active owner subtree. Match
+    // its canvas ID explicitly instead of widening the editing API search.
+    for (const f of all) {
+      const values = [f.memoizedProps?.value];
+      let h = f.memoizedState, count = 0;
+      while (h && count++ < 1000) {
+        values.push(h.memoizedState?.current, h.memoizedState?.[0]);
+        h = h.next;
+      }
+      for (const value of values) if (value?.canvasId === id && value.stores && value.graph && typeof value.graph.getNodes === 'function' && typeof value.graph.applyChanges === 'function') canvasContext ??= value;
+    }
     for (const value of candidates) {
       if (typeof value.getNodes === 'function' && typeof value.deleteElements === 'function') flow ??= value;
+      if (value.canvasId === id && value.stores && value.graph && typeof value.graph.getNodes === 'function' && typeof value.graph.applyChanges === 'function') canvasContext ??= value;
       if (typeof value.fitView === 'function' && typeof value.setViewport === 'function') viewport ??= value;
       if (typeof value.createFromSelection === 'function' && typeof value.unpile === 'function') pile ??= value;
       if (typeof value.getState === 'function' && typeof value.subscribe === 'function') {
@@ -90,7 +104,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
       }
     }
     if (!props || !store || !flow) failure('UNSUPPORTED_VERSION', '画布编辑接口不匹配；请运行诊断并更新适配层。', { props: !!props, store: !!store, flow: !!flow });
-    return { id, all, props, store, flow, viewport, pile, host, history };
+    return { id, all, props, store, flow, viewport, pile, host, history, canvasContext };
   }
   const nodes = (b: any) => b.flow.getNodes();
   const edges = (b: any) => b.flow.getEdges();
@@ -718,10 +732,54 @@ export function installRuntime(native: any, advancedInstaller?: any) {
     if (!args.position) autoPlaced.set(n.id, { x: Math.round(n.position.x), y: Math.round(n.position.y) });
     return { canvasId: b.id, nodeId: n.id, url: info.url, persistence: await flush(b.id) };
   }
+  /** Node ids an action names: nodeId(s), edit operations and prompt segments. Unknown ids are dropped later. */
+  function touchedNodes(args: any) {
+    const ids = new Set<string>();
+    const add = (v: any) => { if (typeof v === 'string') ids.add(v); else if (Array.isArray(v)) v.forEach(add); };
+    add(args.nodeId); add(args.nodeIds);
+    for (const op of Array.isArray(args.operations) ? args.operations : []) { add(op?.nodeId); add(op?.nodeIds); add(op?.source); add(op?.target); }
+    for (const segment of Array.isArray(args.segments) ? args.segments : []) add(segment?.nodeId);
+    return [...ids];
+  }
+  /**
+   * Web canvases keep offscreen nodes as overview stubs (title/src/type only) after a reload and fetch
+   * the rest when they scroll into view. Load details through the app's own loader before reading or
+   * changing them, so reads are complete and writes never replace real data with a stub.
+   */
+  async function ensureDetails(canvasId: string, ids?: string[]) {
+    guard(canvasId);
+    let b: any;
+    try { b = bindings(); } catch { return null; }
+    const present = new Set(nodes(b).map((n: any) => n.id));
+    const list = ids ? ids.filter(id => present.has(id)) : [...present];
+    if (!list.length) return null;
+    if (typeof native.nodeDetails !== 'function') return null;
+    if (!b.canvasContext) return { missingIds: list };
+    let timer: any, outcome: any;
+    try {
+      outcome = await Promise.race([
+        Promise.resolve(native.nodeDetails(b.canvasContext, list, { force: false })).catch((e: any) => ({ error: e })),
+        new Promise(resolve => { timer = setTimeout(() => resolve({ timeout: true }), 18000); }),
+      ]);
+    } finally { clearTimeout(timer); }
+    guard(canvasId);
+    const missing = outcome?.timeout ? list : Array.isArray(outcome?.missingIds) ? outcome.missingIds.filter((id: any) => typeof id === 'string' && list.includes(id)) : outcome?.error ? list : [];
+    return { missingIds: missing as string[] };
+  }
+  const detailReaders = ['inspect', 'promptReferences', 'generationStatus', 'generationHistory', 'prepareGeneration'];
+  const detailFree = ['diagnose', 'guard', 'save', 'view', 'capabilities', 'history', 'prepareHistory', 'importFileBegin', 'importFileChunk', 'importFileAbort', 'canvasList', 'canvasGet', 'canvasCreate'];
   const advanced=typeof advancedInstaller==='function'?advancedInstaller(native,{guard,bindings,node,nodes,edges,writable,changes,makeNode,runEdit,flush,snapshot,pause,prepareGeneration,generationPanel}):{};
   async function dispatch(action: string, args: any = {}) {
     try {
-      let result: any;
+      let result: any, details: any = null;
+      const detailCanvasId = typeof args.canvasId === 'string' ? args.canvasId : action === 'inspect' ? route() : undefined;
+      if (!detailFree.includes(action) && detailCanvasId && !(action === 'inspect' && args.includeData === false)) {
+        const everything = (action === 'promptReferences' && args.source !== 'library') || (action === 'inspect' && !args.nodeIds) || (action === 'taskControl' && ['list', 'progress'].includes(args.action) && !args.nodeId);
+        details = await ensureDetails(detailCanvasId, everything ? undefined : touchedNodes(args));
+        if (details?.missingIds.length && !detailReaders.includes(action) && !(action === 'taskControl' && ['list', 'progress'].includes(args.action))) {
+          failure('NODE_DETAILS_UNAVAILABLE', '节点详情尚未加载完成，为避免覆盖原有内容已停止操作；请稍后重新读取画布再试。', { nodeIds: details.missingIds });
+        }
+      }
       switch (action) {
         case 'diagnose': {
           let canvas: any;
@@ -800,6 +858,7 @@ export function installRuntime(native: any, advancedInstaller?: any) {
         case 'guard': guard(args.canvasId); result = { canvasId: args.canvasId }; break;
         default: if(typeof advanced[action]==='function')result=await advanced[action](args);else failure('INVALID_ACTION', '未知适配层动作。');
       }
+      if (details?.missingIds.length && result && typeof result === 'object') result = { ...result, detailsMissing: details.missingIds };
       return { ok: true, ...clean(result) };
     } catch (e: any) { return { ok: false, error: { code: e.code ?? 'ADAPTER_ERROR', message: e.message ?? String(e), ...(e.details ? { details: clean(e.details) } : {}) } }; }
   }

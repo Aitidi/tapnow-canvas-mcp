@@ -4,7 +4,7 @@
 
 这是一个本地 stdio MCP 服务：通过 Chrome DevTools Protocol（CDP）连接本机的 Tapnow Desktop（Electron）或 Chrome，复用当前登录状态，调用应用自身的编辑、上传、生成与保存入口。它不修改应用安装文件，不读取登录凭据，也不向 agent 开放任意脚本执行。
 
-> 当前版本 0.2.0。在 Windows、Tapnow Desktop 0.4.214、Node.js 24 上验证新增能力；原有双端模式保留，新增能力尚未逐项实测网页端。构建和 140 项自动化测试通过。Tapnow 更新可能影响兼容性，其他操作系统尚未实测。
+> 当前版本 0.2.0。已在 Windows、Tapnow Desktop 0.4.279 和 Chrome 网页端进行兼容性验证；最近一轮网页适配见 [验证记录](VERIFICATION.md)。构建和 178 项自动化测试通过。付费生成及图片工具执行有独立验证边界，其他操作系统尚未实测。
 
 ## 能做什么
 
@@ -71,7 +71,7 @@ npm run diagnose
 
 ### 3. 准备网页端（只用 APP 端可跳过）
 
-网页端识别项目工作区地址 `https://app.tapnow.ai/p/<项目 UUID>?c=<画布 UUID>`（旧版 `https://app.tapnow.ai/canvas/<画布 UUID>` 仍兼容），需要 Chrome 144 或更新版本，无需重启浏览器：
+网页端识别项目工作区地址 `https://app.tapnow.ai/p/<项目 UUID>?c=<画布 UUID>` 和独立画布地址 `https://app.tapnow.ai/p/<画布 UUID>?t=c`（旧版 `https://app.tapnow.ai/canvas/<画布 UUID>` 仍兼容），需要 Chrome 144 或更新版本，无需重启浏览器：
 
 1. 打开 `chrome://inspect/#remote-debugging`，启用远程调试。
 2. 登录 Tapnow，打开一个目标网页画布。
@@ -181,7 +181,7 @@ npm run diagnose:both
 
 - **恢复结果**：先用 `tapnow_generation_history` 查询，再将 `historyId` 与 `resourceId` 或 `resourceIndex` 交给 `tapnow_history_restore`。`mode=replace` 更新原节点，`mode=copy` 新建素材节点。默认恢复原生归一化后的提示词和参数；`restoreParameters=false` 保留当前参数。范围为最近 100 条历史，未找到时不会覆盖当前结果。
 - **图片处理**：`tapnow_image_tools` 使用 `phase=prepare` 检查，`phase=execute` 执行。`crop` 需要像素 `rect`，`resize` 需要 `width/height`，`split` 使用 `rows/cols`（2–8）。这些操作创建新 PNG 并上传，不消耗生成积分，但会使用素材存储。源图和输出上限 64MP，单边输出最多 8192 像素。源图片文件最多 50 MiB，校验格式与实际流大小后从本地 Blob 解码，避免远程图片缓存造成解码卡住。
-- **原生图片工具**：`multi_angle` 的 `settings` 支持 `rotation`（−90–90°）、`tilt`（−1–1）、`zoom`（0–10）和 `wideAngleLens`；`relight` 支持 `azimuth/elevation`、`brightness/temperature`、`rimEnabled`。亮度和色温须使用应用提供的档位。`upscale` 支持 `scale`（2/4/6）和原生 `style`，准备时新建放大节点，后续使用返回的 `nodeId`。准备会返回实际参数、价格与就绪情况；生成执行及抠图需要明确授权并传 `allowPaid=true`。抠图当前无法可靠预读费用，返回未知费用。打光 `output=preview` 走应用免费的本地导出按钮；预览资源或按钮未就绪时会拒绝执行。
+- **原生图片工具**：`multi_angle` 的 `settings` 支持 `rotation`（−90–90°）、`tilt`（−1–1）、`zoom`（0–10）和 `wideAngleLens`；新版网页 `relight` 使用 `look`（`soft` 柔光、`split` 侧光、`top` 顶光、`rim` 轮廓光），旧版保留 `azimuth/elevation`；亮度、色温、轮廓光按当前原生面板能力设置。`upscale` 支持 `scale`（2/4/6）和原生 `style`。旧版准备时新建放大节点，新版在资源编辑器内准备，后续统一使用返回的 `nodeId`。准备返回实际参数、价格与就绪情况；生成执行及抠图需要明确授权并传 `allowPaid=true`，抠图费用可能未知。打光 `output=preview` 仅在应用提供免费本地导出按钮时可用；2026-11-22 网页新版未提供该入口，会明确报告不可用。
 - **跨画布**：`tapnow_canvas_manage` 的 `list` 支持 `offset/limit` 和 `scope`（`personal`、`team`、`all`，默认 `all`）；`create` 创建私有画布；`open/copy_nodes` 使用查询或创建返回的 `destinationCanvasId`。切换前必须确认源画布保存。复制支持文字、图片、视频、音频、分组及后代（最多 100 节点），重建内部连线与组内坐标，完成后停留在目标画布。生成中的节点不可复制；不复制任务或历史记录。列表范围取决于当前账号的原生接口。
 - **Element 引用**：`tapnow_elements` 可按 `space=personal/team`、`query`、`page/limit` 查询，或 `action=get` 查询单个 `elementId`。将 ID 作为 `tapnow_prompt_set` 的 `{type:"reference",source:"element",elementId:"…"}` 段传入，不手写 token。
 - **任务控制**：`tapnow_generation_control` 的 `list/progress` 返回节点真实 `taskInfo`；只有应用提供进度时才有百分比。`cancel` 只调用该节点唯一的原生活动 `stop`，入口缺失时返回不可用，不会修改状态冒充取消。`retry_prepare` 准备失败/停止任务，`retry` 经 `allowPaid` 授权后提交。

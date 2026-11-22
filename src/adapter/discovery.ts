@@ -42,7 +42,7 @@ export async function discoverNativeModules(): Promise<any> {
     });
   const factories: Record<string, any> = {};
   const modelRegistries: Record<string, any> = {};
-  let flush: any, upload: any, policy: any, selection: any, generationHistory: any, normalizeHistory: any, canvasApi: any;
+  let flush: any, upload: any, policy: any, selection: any, generationHistory: any, normalizeHistory: any, canvasApi: any, nodeDetails: any;
   const audioModels = new Map<string, any>();
   const failures: string[] = [];
   const source = (value: any): string => {
@@ -62,6 +62,9 @@ export async function discoverNativeModules(): Promise<any> {
       try {
         if (typeof value === 'function') {
           const src = source(value);
+          // Web canvases load offscreen nodes as overview stubs; this native loader fetches their details
+          // (only nodes still incomplete when force is false) and writes them into the graph.
+          if (/getNodeDetails\(/.test(src) && /details failed/.test(src) && /missingIds/.test(src) && /markLoading\(/.test(src) && /\.canvasId/.test(src)) nodeDetails ??= value;
           if (/rawGenerationParams:/.test(src) && /sourceFileIds:/.test(src) && /\.resources\.map\(/.test(src) && /createdAt:/.test(src)) normalizeHistory ??= value;
           // 0.4.20x exports the uploader class instead of its singleton. Delay
           // construction until an actual import, so discovery stays read-only.
@@ -180,5 +183,5 @@ export async function discoverNativeModules(): Promise<any> {
       return matches[0].flush(canvasId);
     };
   }
-  return { factories, modelRegistries, flush, upload, policy, selection, generationHistory, normalizeHistory, canvasApi, moduleUrls, failures };
+  return { factories, modelRegistries, flush, upload, policy, selection, generationHistory, normalizeHistory, canvasApi, nodeDetails, moduleUrls, failures };
 }

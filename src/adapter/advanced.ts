@@ -59,32 +59,112 @@ export function createAdvancedHandlers(native:any, bridge:any) {
   function toolsFor(b:any,nodeId:string){
     const found=new Map<string,any>(),seen=new Set();
     const walk=(v:any,depth=0)=>{if(!v||typeof v!=='object'||depth>7||seen.has(v))return;seen.add(v);if(typeof v.key==='string'&&typeof v.handle==='function')found.set(v.key,v);if(Array.isArray(v))for(const x of v)walk(x,depth+1);else for(const key of ['tools','menuItems','subActions'])walk(v[key],depth+1);};
-    for(const f of b.all)if(f.memoizedProps?.nodeId===nodeId&&f.memoizedProps.tools)walk(f.memoizedProps.tools);
+    for(const f of b.all)if(f.memoizedProps?.nodeId===nodeId){
+      if(f.memoizedProps.tools)walk(f.memoizedProps.tools);
+      // The new hover toolbar only renders a Quick Split component. Its native
+      // image-action hook still memoizes the complete action list, including
+      // each operation's permission flags and original callbacks.
+      let h=f.memoizedState,count=0;
+      while(h&&count++<1000){
+        const list=h.memoizedState?.[0];
+        if(Array.isArray(list)&&['crop','relight','more'].every(key=>list.some(t=>t?.key===key))&&list.some(t=>typeof t?.handle==='function'))walk(list);
+        h=h.next;
+      }
+    }
     return found;
   }
   async function selectImage(args:any){let b=bindings();writable(b);const n=node(b,args.nodeId);if(n.type!=='image'||!/^https?:\/\//.test(n.data?.src??''))fail('REFERENCE_NOT_READY','请选择有成果的图片节点。');idle(n);b=await changes(b,nodes(b).map((n:any)=>({type:'select',id:n.id,selected:n.id===args.nodeId})));native.selection?.getState?.().setSelectedNodes?.([node(b,args.nodeId)]);if(b.viewport)await b.viewport.fitView({nodes:[{id:args.nodeId}],padding:.4,duration:0});await pause(250);return bindings();}
-  function descendants(owner:any){
-    const result:any[]=[],stack=[owner],seen=new Set(),propsSeen=new Set();while(stack.length){const f=stack.pop();if(!f||seen.has(f))continue;seen.add(f);if(f.memoizedProps&&typeof f.memoizedProps==='object'&&!propsSeen.has(f.memoizedProps)){propsSeen.add(f.memoizedProps);result.push(f.memoizedProps);}if(f.child)stack.push(f.child);if(f!==owner&&f.sibling)stack.push(f.sibling);}return result;
+  function descendantFibers(owner:any){const result:any[]=[],stack=[owner],seen=new Set();while(stack.length){const f=stack.pop();if(!f||seen.has(f))continue;seen.add(f);result.push(f);if(f.child)stack.push(f.child);if(f!==owner&&f.sibling)stack.push(f.sibling);}return result;}
+  function descendants(owner:any){return [...new Set(descendantFibers(owner).map((f:any)=>f.memoizedProps).filter((p:any)=>p&&typeof p==='object'))];}
+  function resourceOwner(b:any,nodeId:string){
+    const owners=b.all.filter((f:any)=>f.memoizedProps?.node?.id===nodeId&&f.memoizedProps.detailsReady===true&&typeof f.memoizedProps.onClose==='function');
+    return owners.length&&owners.every((f:any)=>f.memoizedProps.node===owners[0].memoizedProps.node&&f.memoizedProps.onClose===owners[0].memoizedProps.onClose)?owners[0]:undefined;
+  }
+  async function openResourceTool(args:any){
+    let b=bindings();writable(b);
+    if(typeof b.canvasContext?.openResource!=='function')fail('CAPABILITY_UNAVAILABLE','当前版本没有图片编辑器入口。');
+    b.canvasContext.openResource({view:'image',nodeId:args.nodeId});
+    let owner:any;
+    for(let i=0;i<30;i++){await pause(100);guard(args.canvasId);owner=resourceOwner(bindings(),args.nodeId);if(owner)break;}
+    if(!owner)fail('GENERATION_NOT_READY','图片编辑器尚未完成加载。');
+    let layerReady=false;
+    for(let i=0;i<50;i++){
+      owner=resourceOwner(bindings(),args.nodeId);
+      const layer=owner&&descendants(owner).find((p:any)=>p.id==='info')?.actions?.props?.activeLayer;
+      if(layer?.id&&typeof layer.src==='string'&&layer.src){layerReady=true;break;}
+      await pause(100);guard(args.canvasId);
+    }
+    if(!layerReady)fail('GENERATION_NOT_READY','图片图层尚未完成加载。');
+    const active=descendants(owner).filter((p:any)=>p.active!==false&&typeof p.onClose==='function'&&(p.nodeId===args.nodeId&&p.embedded===true&&p.presentation==='inspector'&&'initialParams'in p||p.layer?.src&&p.session?.media?.type==='image'&&typeof p.submitGeneration==='function'));
+    const close=[...new Set(active.map((p:any)=>p.onClose))];
+    if(close.length>1)fail('CAPABILITY_UNAVAILABLE','图片编辑器存在多个活动面板。');
+    if(close.length){(close[0] as any)();await pause(400);guard(args.canvasId);owner=resourceOwner(bindings(),args.nodeId);}
+    if(!owner)fail('GENERATION_NOT_READY','图片编辑器已关闭。');
+    const sections=descendants(owner).filter((p:any)=>p.id==='edit'&&typeof p.onToggle==='function');
+    if(!sections.length||!sections.every((p:any)=>p.onToggle===sections[0].onToggle))fail('CAPABILITY_UNAVAILABLE','未找到唯一的原生图片工具菜单。');
+    if(!sections[0].open){sections[0].onToggle();await pause(100);}
+    guard(args.canvasId);owner=resourceOwner(bindings(),args.nodeId);
+    if(!owner)fail('GENERATION_NOT_READY','图片编辑器已关闭。');
+    const literal=new RegExp('["\u0027\u0060]'+args.operation+'["\u0027\u0060]');
+    let actionFibers:any[]=[],button:any;
+    for(let i=0;i<50;i++){
+      owner=resourceOwner(bindings(),args.nodeId);if(!owner)break;
+      actionFibers=descendantFibers(owner).filter((f:any)=>{const p=f.memoizedProps;return typeof p?.queueKey==='string'&&p.queueKey.startsWith(args.nodeId+':')&&p.opensPanel===true&&typeof p.onClick==='function'&&literal.test(Function.prototype.toString.call(p.onClick));});
+      button=actionFibers.length&&descendantFibers(actionFibers[0]).find((f:any)=>f.type==='button'&&f.memoizedProps?.['data-opens-panel']===true&&typeof f.stateNode?.click==='function');
+      if(button&&button.stateNode.isConnected&&button.stateNode.getClientRects().length&&!button.stateNode.closest('[inert],[aria-hidden="true"]'))break;
+      if(typeof document==='undefined'&&actionFibers.length)break;
+      button=undefined;await pause(100);guard(args.canvasId);
+    }
+    const actions=actionFibers.map((f:any)=>f.memoizedProps);
+    if(!actions.length||!actions.every((p:any)=>p.onClick===actions[0].onClick)||actions.some((p:any)=>p.disabled||p.hidden||p.lockedTooltip))fail('CAPABILITY_UNAVAILABLE','原生图片面板不可用或被应用策略限制。');
+    if(typeof document!=='undefined'&&!button)fail('GENERATION_NOT_READY','原生图片工具菜单仍在切换。');
+    if(button){if(button.memoizedProps.disabled)fail('CAPABILITY_UNAVAILABLE','原生图片工具按钮不可用。');button.stateNode.click();}else actions[0].onClick();
+    for(let i=0;i<100;i++){await pause(100);guard(args.canvasId);if(editorOwner(bindings(),args.nodeId,args.operation))return;}
+    fail('GENERATION_NOT_READY','原生图片参数面板尚未完成加载。');
   }
   function editorOwner(b:any,nodeId:string,operation:string){
     const marker=operation==='multi_angle'?'multiAngleRotation':'relightExport';
-    const owners=b.all.filter((f:any)=>{const p=f.memoizedProps;if(p?.nodeId!==nodeId)return false;if(operation==='upscale')return p.visible===true&&typeof p.parentImage==='string';const fn=typeof f.type==='function'?f.type:f.type?.type??f.type?.render;return typeof fn==='function'&&'initialParams' in p&&typeof p.src==='string'&&Function.prototype.toString.call(fn).includes(marker);});
+    const viewer=resourceOwner(b,nodeId),scoped=viewer?new Set(descendantFibers(viewer)):new Set();
+    const owners=b.all.filter((f:any)=>{const p=f.memoizedProps;if(!p||p.active===false)return false;const fn=typeof f.type==='function'?f.type:f.type?.type??f.type?.render,src=typeof fn==='function'?Function.prototype.toString.call(fn):'';
+      if(operation==='upscale'&&scoped.has(f)&&p.layer?.src&&p.session?.media?.type==='image'&&typeof p.submitGeneration==='function'&&['TOPAZLABS','scaleFactor','smartGrain'].every(key=>src.includes(key)))return true;
+      if(p.nodeId!==nodeId)return false;if(operation==='upscale')return p.visible===true&&typeof p.parentImage==='string';
+      return 'initialParams'in p&&typeof p.src==='string'&&(src.includes(marker)||operation==='relight'&&['tamar-relight','azimuthDeg','rimEnabled'].every(key=>src.includes(key)));});
     // React memo wrappers can expose the same native component twice.
     return owners.length&&owners.every((f:any)=>f.memoizedProps===owners[0].memoizedProps)?owners[0]:undefined;
   }
   function editorState(b:any,nodeId:string,operation:string,output?:string){
     const owner=editorOwner(b,nodeId,operation);if(!owner)return {ready:false,fields:{},estimatedPrice:null};
-    const props=descendants(owner),single=(filter:any)=>{const p=props.filter(filter);const callback=(v:any)=>v.onCheckedChange??v.onValueChange??v.onChange??v.onAngleChange??v.onSubmit??v.onClick;return p.length&&p.every(v=>callback(v)===callback(p[0]))?p[0]:undefined;};
+    const props=descendants(owner),single=(filter:any)=>{const p=props.filter(filter);const callback=(v:any)=>v.onCheckedChange??v.onValueChange??v.onChange??v.onAngleChange??v.onPresetChange??v.onParamsChange??v.onSubmit??v.onClick;return p.length&&p.every(v=>callback(v)===callback(p[0]))?p[0]:undefined;};
     const price=single((p:any)=>typeof p.onClick==='function'&&'estimatedPrice' in p&&'isGenerating' in p&&'disabled' in p);
     const preview=single((p:any)=>p['data-testid']==='canvas-node-image-relight-export-btn'&&typeof p.onClick==='function');
     let fields:any={},controls:any={};
     if(operation==='upscale'){
       const form=single((p:any)=>typeof p.onScaleChange==='function'&&typeof p.onStyleChange==='function'&&typeof p.onSubmit==='function'&&'tapiesRequired' in p);
       if(form){fields={scale:form.scale,style:form.style};controls={scale:form.onScaleChange,style:form.onStyleChange};}
+      else if(owner.memoizedProps.layer&&owner.memoizedProps.session){
+        const scale=single((p:any)=>typeof p.onChange==='function'&&typeof p.value==='number'&&Array.isArray(p.options)&&p.options.length===3&&[2,4,6].every(v=>p.options.includes(v)));
+        const style=single((p:any)=>typeof p.id==='string'&&p.label&&typeof p.value==='string'&&!p.modelPicker&&typeof p.onValueChange==='function');
+        if(scale){fields.scale=scale.value;controls.scale=scale.onChange;controls.scaleValues=scale.options;}
+        if(style){fields.style=style.value;controls.style=style.onValueChange;}
+      }
     }else if(operation==='multi_angle'){
       for(const [key,min,max]of [['rotation',-90,90],['tilt',-1,1],['zoom',0,10]] as any){const p=single((p:any)=>p.min===min&&p.max===max&&typeof p.onValueChange==='function'&&'locked' in p);if(p){fields[key]=p.value;controls[key]=p.onValueChange;}}
       const wide=single((p:any)=>'checked' in p&&typeof p.onCheckedChange==='function'&&Function.prototype.toString.call(p.onCheckedChange).includes('wide_angle_lens:'));if(wide){fields.wideAngleLens=wide.checked;controls.wideAngleLens=wide.onCheckedChange;}
     }else{
+      const preset=single((p:any)=>p.params&&typeof p.params.preset==='string'&&typeof p.params.brightnessLevel==='number'&&typeof p.params.temperatureK==='number'&&typeof p.onPresetChange==='function');
+      if(preset){
+        fields={lightingPreset:preset.params.preset,brightness:preset.params.brightnessLevel,temperature:preset.params.temperatureK,rimEnabled:preset.params.rimEnabled};
+        const buttons=descendantFibers(owner).filter((f:any)=>f.type==='button'&&typeof f.memoizedProps?.onClick==='function');
+        const click=(testId:string)=>{const matches=buttons.filter((f:any)=>f.memoizedProps['data-testid']===testId);if(preset.disabled||matches.length!==1||matches[0].memoizedProps.disabled)fail('CAPABILITY_UNAVAILABLE','当前原生灯光选项不可用。');const f=matches[0];if(typeof f.stateNode?.click==='function')f.stateNode.click();else f.memoizedProps.onClick({stopPropagation(){},preventDefault(){}});};
+        const colors=buttons.map((f:any)=>/^relight-color-(\d+)$/.exec(f.memoizedProps['data-testid']??'')?.[1]).filter(Boolean).map(Number);
+        if(colors.length){controls.temperatureValues=[...new Set(colors)];controls.temperature=(v:any)=>click('relight-color-'+v);}
+        const looks=buttons.filter((f:any)=>/^relight-look-(soft|split|top|rim)$/.test(f.memoizedProps['data-testid']??''));
+        fields.look=looks.find((f:any)=>f.memoizedProps['aria-pressed']===true)?.memoizedProps['data-testid'].slice('relight-look-'.length)??null;
+        controls.lookValues=[...new Set(looks.map((f:any)=>f.memoizedProps['data-testid'].slice('relight-look-'.length)))];
+        if(looks.length)controls.look=(v:string)=>click('relight-look-'+v);
+        const aggregate=single((p:any)=>p.params&&typeof p.params.preset==='string'&&typeof p.params.brightnessLevel==='number'&&typeof p.params.temperatureK==='number'&&typeof p.onParamsChange==='function');
+        if(aggregate)controls.brightness=(v:any)=>{if(aggregate.disabled)fail('POLICY_DENIED','原生打光面板当前不可编辑。');aggregate.onParamsChange({...aggregate.params,brightnessLevel:v});};
+      }
       const angle=single((p:any)=>typeof p.onAngleChange==='function'&&'azimuthDeg' in p&&'imageSrc' in p);
       if(angle){fields.azimuth=angle.azimuthDeg;fields.elevation=angle.elevationDeg;controls.angle=angle.onAngleChange;fields.rimEnabled=angle.rimEnabled;}
       for(const [key,suffix]of [['brightness','%'],['temperature','K']]){const p=single((p:any)=>p.suffix===suffix&&Array.isArray(p.stops)&&typeof p.onChange==='function');if(p){fields[key]=p.value;controls[key]=p.onChange;controls[key+'Values']=p.stops.map((x:any)=>x.value);}}
@@ -100,7 +180,7 @@ export function createAdvancedHandlers(native:any, bridge:any) {
       guard(args.canvasId);const state=editorState(bindings(),args.nodeId,args.operation,args.output);
       if(state.parametersLocked)fail('POLICY_DENIED','应用锁定了图片工具参数。');
       if(key==='azimuth'||key==='elevation'){
-        if(!state.controls?.angle)fail('CAPABILITY_UNAVAILABLE','当前面板没有可调灯光方向。');
+        if(!state.controls?.angle)fail('CAPABILITY_UNAVAILABLE','当前原生面板使用灯光预设；请通过 settings.look 选择可用预设。',{choices:state.controls?.lookValues??[]});
         state.controls.angle(key==='azimuth'?value:state.fields.azimuth,key==='elevation'?value:state.fields.elevation);
       }else{
         if(typeof state.controls?.[key]!=='function')fail('INVALID_ARGUMENT','当前图片操作不支持该参数。',{key,ownerAvailable:!!editorOwner(bindings(),args.nodeId,args.operation),available:Object.keys(state.controls??{})});
@@ -112,6 +192,11 @@ export function createAdvancedHandlers(native:any, bridge:any) {
       if(actual!==value)fail('EDIT_REJECTED','应用未接受图片工具参数。',{key,expected:value,actual});
     }
     return editorState(bindings(),args.nodeId,args.operation,args.output);
+  }
+  async function readyEditor(args:any){
+    let state=await configureEditor(args);
+    for(let i=0;i<100&&state.button?.priceLoading;i++){await pause(100);guard(args.canvasId);state=editorState(bindings(),args.nodeId,args.operation,args.output);}
+    return state;
   }
   async function imageTools(args:any){
     guard(args.canvasId);let b=bindings();const source=node(b,args.nodeId);
@@ -147,6 +232,16 @@ export function createAdvancedHandlers(native:any, bridge:any) {
     }
     let targetId=args.nodeId,added:any[]=[];
     if(args.phase==='prepare'){
+      if(source.data?.src)b=await selectImage(args);
+      const resourceToolbar=b.all.some((f:any)=>f.memoizedProps?.nodeId===args.nodeId&&Array.isArray(f.memoizedProps.groups)&&f.memoizedProps.groups.some((g:any)=>Array.isArray(g)&&g.some((t:any)=>t?.key==='editMore')));
+      if(resourceToolbar&&typeof b.canvasContext?.openResource==='function'&&source.data?.src){
+        // Rebind once if the freshly mounted viewer has not finished wiring its
+        // first interaction. This only opens a panel; it never submits a task.
+        try{await openResourceTool(args);}catch(e:any){if(e.code!=='GENERATION_NOT_READY')throw e;guard(args.canvasId);await openResourceTool(args);}
+        if(args.output==='preview'&&!editorState(bindings(),args.nodeId,args.operation,'preview').button)fail('CAPABILITY_UNAVAILABLE','当前原生图片编辑器不提供独立的免费打光预览导出。');
+        const state=await readyEditor(args);
+        return {canvasId:args.canvasId,nodeId:args.nodeId,sourceNodeId:args.nodeId,operation:args.operation,prepared:true,ready:state.ready,fields:state.fields,nodeIds:[],estimatedPrice:state.estimatedPrice,requiresPaidAuthorization:args.output!=='preview',editor:'resource',persistence:await flush(args.canvasId)};
+      }
       if(args.operation==='upscale'&&source.data?.type==='upscale'){
         writable(b);idle(source);b=await changes(b,nodes(b).map((n:any)=>({type:'select',id:n.id,selected:n.id===args.nodeId})));native.selection?.getState?.().setSelectedNodes?.([node(b,args.nodeId)]);await pause(250);
       }else{
@@ -158,7 +253,9 @@ export function createAdvancedHandlers(native:any, bridge:any) {
       for(let i=0;i<20&&!editorOwner(bindings(),targetId,args.operation);i++)await pause(150);
     }else{
       writable(b);idle(source);
-      if(args.operation==='upscale'?source.data?.type!=='upscale':source.data?.mode!==(args.operation==='multi_angle'?'multi-angle':'relight'))fail('GENERATION_NOT_READY','请先 prepare 并使用返回的 nodeId 执行。');
+      const panel=editorOwner(b,args.nodeId,args.operation)?.memoizedProps;
+      const embedded=!!resourceOwner(b,args.nodeId)&&(panel?.embedded===true||!!panel?.layer&&!!panel?.session);
+      if(!embedded&&(args.operation==='upscale'?source.data?.type!=='upscale':source.data?.mode!==(args.operation==='multi_angle'?'multi-angle':'relight')))fail('GENERATION_NOT_READY','请先 prepare 并使用返回的 nodeId 执行。');
     }
     guard(args.canvasId);
     const state=await configureEditor({...args,nodeId:targetId});

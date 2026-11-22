@@ -7,6 +7,30 @@ import { TapnowService } from '../src/service.js';
 import { TapnowError } from '../src/errors.js';
 
 const canvasId = 'e1bcdd91-a65f-4710-a3ea-08d98a4da442';
+
+test('新版网页核心模块尚未暴露时不缓存残缺适配器，也不开始写入', async () => {
+  const service = new TapnowService({ endpoint: 'chrome', mode: 'web' });
+  const calls: string[] = [];
+  (service.cdp as any).connect = async () => {};
+  (service.cdp as any).send = async () => ({ frameTree: { frame: { url: 'https://app.tapnow.ai/p/project' }, resources: [] } });
+  (service.cdp as any).evaluate = async (expression: string) => {
+    calls.push(expression);
+    if (expression.startsWith("location.origin==='https://app.tapnow.ai'")) return true;
+    return false;
+  };
+  await assert.rejects(service.inspect(), { code: 'CANVAS_NOT_READY' });
+  assert.equal(calls.some(expression => expression.includes('const native=await')), false);
+  assert.equal(calls.some(expression => expression.includes('.dispatch(')), false);
+  assert.equal(calls.at(-1), 'delete globalThis.__tapnowCanvasMcpModuleHints');
+});
+
+test('跨画布复制遇到缺失详情的分组后代时，在切换与写入之前停止', async t => {
+  const f=await fixture(t),service=f.create();let navigated=0;
+  (service as any).invoke=async(action:string)=>action==='inspect'?{nodes:[{id:'group',type:'group',data:{},position:{x:0,y:0}},{id:'child',parentId:'group',type:'image',data:{title:'overview'},position:{x:0,y:0}}],edges:[],detailsMissing:['child']}:{ok:true};
+  (service as any).openCanvas=async()=>{navigated++};
+  await assert.rejects(service.canvasManage({action:'copy_nodes',canvasId,destinationCanvasId:'00000000-0000-0000-0000-000000000002',nodeIds:['group'],requestId:'incomplete-copy'}),{code:'NODE_DETAILS_UNAVAILABLE'});
+  assert.equal(navigated,0);
+});
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'tapnow-service-test-'));
   const services: TapnowService[] = [];
@@ -216,4 +240,19 @@ test('@素材写入连接超时后重试保持未知，避免重复改动', asyn
   await assert.rejects(service.promptSet(args), (error: any) => error.code === 'OPERATION_TIMEOUT');
   await assert.rejects(service.promptSet(args), (error: any) => error.code === 'REQUEST_OUTCOME_UNKNOWN');
   assert.equal(writes, 1);
+});
+
+
+test('跨画布按目标所属项目或独立画布地址导航，不复用源项目 ID',async t=>{
+ const f=await fixture(t),destination='00000000-0000-0000-0000-000000000002',sourceProject='11111111-2222-3333-4444-555555555555',targetProject='22222222-2222-3333-4444-555555555555';
+ for(const [index,record,expected] of [[0,{id:destination,type:'canvas'},'https://app.tapnow.ai/p/'+destination+'?t=c'],[1,{id:destination,type:'canvas',parent_id:targetProject},'https://app.tapnow.ai/p/'+targetProject+'?c='+destination]] as any[]){
+  const service=f.create();let navigated='';(service.cdp as any).evaluate=async()=> 'https://app.tapnow.ai/p/'+sourceProject+'?c='+canvasId;(service.cdp as any).send=async(method:string,args:any)=>{assert.equal(method,'Page.navigate');navigated=args.url;return{}};
+  (service as any).invoke=async(action:string)=>action==='canvasGet'?{canvas:record}:action==='save'?{persistence:{confirmed:true}}:action==='inspect'?{canvasId:destination}:{ok:true};
+  await service.canvasManage({action:'open',canvasId,destinationCanvasId:destination,requestId:'target-route-'+index});assert.equal(navigated,expected);
+ }
+});
+test('项目集不能作为打开画布目标，拒绝前不保存或导航',async t=>{
+ const f=await fixture(t),service=f.create(),calls:string[]=[];const destination='00000000-0000-0000-0000-000000000002';
+ (service as any).invoke=async(action:string)=>{calls.push(action);return action==='canvasGet'?{canvas:{id:destination,type:'collection'}}:{ok:true}};
+ await assert.rejects(service.canvasManage({action:'open',canvasId,destinationCanvasId:destination,requestId:'collection-target'}),{code:'INVALID_ARGUMENT'});assert.deepEqual(calls,['guard','guard','canvasGet']);
 });

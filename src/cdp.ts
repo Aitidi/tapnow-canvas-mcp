@@ -10,10 +10,12 @@ export function isTapnowTarget(value: string, mode: 'desktop' | 'web') {
   try {
     const url = new URL(value);
     if (url.username || url.password) return false;
+    const workspace = /^\/p\/([0-9a-f-]{36})\/?$/i.exec(url.pathname);
+    const canvasId = url.searchParams.get('c') ?? (url.searchParams.get('t') === 'c' ? workspace?.[1] : undefined);
     return mode === 'desktop' ? url.protocol === 'tapnow:' && url.host === 'app'
       : url.origin === 'https://app.tapnow.ai' && (/^\/canvas\/[0-9a-f-]{36}\/?$/i.test(url.pathname) ||
-        // Project workspace route: /p/<project>?c=<canvas>.
-        /^\/p\/[0-9a-f-]{36}\/?$/i.test(url.pathname) && /^[0-9a-f-]{36}$/i.test(url.searchParams.get('c') ?? ''));
+        // Nested canvas: /p/<project>?c=<canvas>; standalone: /p/<canvas>?t=c.
+        !!workspace && /^[0-9a-f-]{36}$/i.test(canvasId ?? ''));
   } catch { return false; }
 }
 
@@ -151,7 +153,7 @@ export class CdpConnection {
     socket.on('close', disconnected);
     socket.on('error', disconnected);
     await new Promise<void>((resolve, reject) => {
-      const timer = setTimeout(() => { socket.terminate(); reject(new TapnowError('CONNECT_TIMEOUT', '连接调试接口超时；如果 Chrome 显示连接提示，请允许后重试。')); }, this.browserMode ? 45000 : 5000);
+      const timer = setTimeout(() => { socket.terminate(); reject(new TapnowError('CONNECT_TIMEOUT', '连接调试接口超时；如果 Chrome 显示连接提示，请允许后重试。', { endpoint: new URL(endpoint).origin })); }, this.browserMode ? 45000 : 5000);
       socket.once('open', () => { clearTimeout(timer); resolve(); });
       socket.once('error', e => { clearTimeout(timer); reject(e); });
     });
